@@ -233,13 +233,13 @@ async def cmd_start(message: types.Message):
         except ValueError:
             ref_id = None
 
-    # Проверяем наличие пользователя в базе
     async with aiosqlite.connect(db.db_name) as conn:
-        async with conn.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)) as cursor:
+        # Проверяем, существует ли пользователь в базе и его ранг
+        async with conn.execute('SELECT rank FROM users WHERE user_id = ?', (user_id,)) as cursor:
             existing_user = await cursor.fetchone()
 
         if not existing_user:
-            # Проверяем подписку на канал
+            # Проверяем подписку на канал для новых пользователей
             if not await check_subscription(user_id):
                 builder = InlineKeyboardBuilder()
                 builder.row(types.InlineKeyboardButton(
@@ -260,6 +260,12 @@ async def cmd_start(message: types.Message):
             # Добавляем нового пользователя
             await db.add_user(user_id, username, first_name, ref_id)
             
+            # Проверяем, является ли он владельцем или разработчиком
+            if user_id in OWNERS_IDS:
+                await conn.execute('UPDATE users SET rank = ? WHERE user_id = ?', ('owner', user_id))
+            elif user_id in DEVELOPERS_IDS:
+                await conn.execute('UPDATE users SET rank = ? WHERE user_id = ?', ('developer', user_id))
+            
             # Если есть реферер, начисляем ему звезду
             if ref_id:
                 await conn.execute(
@@ -278,6 +284,10 @@ async def cmd_start(message: types.Message):
                 except Exception as e:
                     logger.error(f"Failed to notify referrer: {e}")
 
+            # Получаем назначенный ранг нового пользователя
+            async with conn.execute('SELECT rank FROM users WHERE user_id = ?', (user_id,)) as cursor:
+                rank = (await cursor.fetchone())[0]
+
             welcome_text = (
                 f"👋 Добро пожаловать, {first_name}!\n\n"
                 "🌟 Это бот для заработка звёзд через выполнение заданий.\n"
@@ -287,16 +297,14 @@ async def cmd_start(message: types.Message):
             
             await message.answer(welcome_text, reply_markup=get_main_keyboard('user'))
         else:
-            # Если пользователь уже существует
-            async with conn.execute('SELECT rank FROM users WHERE user_id = ?', (user_id,)) as cursor:
-                rank = (await cursor.fetchone())[0]
-            
+            # Если пользователь уже существует, используем его текущий ранг
+            rank = existing_user[0]
             await message.answer(
                 f"С возвращением, {first_name}!",
                 reply_markup=get_main_keyboard(rank)
             )
-
-# Обработчик проверки подписки
+        
+        await conn.commit()
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription_callback(callback: types.CallbackQuery):
     if await check_subscription(callback.from_user.id):
