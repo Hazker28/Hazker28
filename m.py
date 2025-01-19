@@ -218,14 +218,12 @@ async def check_subscription(user_id: int) -> bool:
         logger.error(f"Error checking subscription: {e}")
         return False
 
-# Обработчик команды /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name
     
-    # Проверяем, есть ли реферальный код в команде start
     ref_id = None
     if len(message.text.split()) > 1:
         try:
@@ -295,7 +293,7 @@ async def cmd_start(message: types.Message):
                 "📌 Используйте кнопки меню для навигации:"
             )
             
-            await message.answer(welcome_text, reply_markup=get_main_keyboard('user'))
+            await message.answer(welcome_text, reply_markup=get_main_keyboard(rank))
         else:
             # Если пользователь уже существует, используем его текущий ранг
             rank = existing_user[0]
@@ -313,18 +311,26 @@ async def check_subscription_callback(callback: types.CallbackQuery):
             callback.from_user.username,
             callback.from_user.first_name
         )
+        
+        # Получаем ранг пользователя
+        async with aiosqlite.connect(db.db_name) as conn:
+            async with conn.execute(
+                'SELECT rank FROM users WHERE user_id = ?',
+                (callback.from_user.id,)
+            ) as cursor:
+                user_data = await cursor.fetchone()
+                rank = user_data[0] if user_data else 'user'
+        
         await callback.message.edit_text(
             "✅ Подписка подтверждена!\nТеперь вы можете пользоваться ботом.",
             reply_markup=None
         )
         await callback.message.answer(
             "🌟 Добро пожаловать в главное меню!",
-            reply_markup=get_main_keyboard('user')
+            reply_markup=get_main_keyboard(rank)  # Используем актуальный ранг
         )
     else:
         await callback.answer("❌ Вы не подписались на канал!", show_alert=True)
-
-# Обработчик кнопки "Заработать звезды"
 @dp.message(F.text == "🌟 Заработать звезды")
 async def earn_stars(message: types.Message):
     user_id = message.from_user.id
@@ -2106,7 +2112,15 @@ async def cancel_any_action(callback: types.CallbackQuery, state: FSMContext):
             reply_markup=get_main_keyboard(await get_user_rank(callback.from_user.id))
         )
 
-# Обработчики возврата в панели
+async def get_user_rank(user_id: int) -> str:
+    async with aiosqlite.connect(db.db_name) as conn:
+        async with conn.execute(
+            'SELECT rank FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 'user'
+            # Обработчики возврата в панели
 @dp.callback_query(F.data == "back_to_owner")
 async def back_to_owner_panel(callback: types.CallbackQuery):
     if not await is_owner(callback.from_user.id):
