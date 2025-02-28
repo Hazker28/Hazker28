@@ -1,4 +1,3 @@
-from aiogram.types import ErrorEvent
 import asyncio
 import logging
 import json
@@ -27,9 +26,6 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiocryptopay import AioCryptoPay, Networks
 import aiosqlite
 import os
-import traceback
-import string
-import random
 
 # Middleware for request throttling
 class ThrottlingMiddleware(BaseMiddleware):
@@ -109,13 +105,38 @@ class UserStates(StatesGroup):
     waiting_for_admin_id = State()
     waiting_for_admin_reason = State()
     waiting_for_rejection_reason = State()
-    waiting_for_balance_user = State()
-    waiting_for_balance_amount = State()
-    waiting_for_balance_reason = State()
+    waiting_for_delete_user = State()
+    waiting_for_delete_confirm = State()
+    waiting_for_info_user = State()
+    waiting_for_info_type = State()
+    waiting_for_info_value = State()
+    waiting_for_delete_info_user = State()
+    waiting_for_delete_info_type = State()
+    waiting_for_referral_user = State()
+    waiting_for_referral_count = State()
+    waiting_for_referral_reason = State()
+    waiting_for_vip_user = State()
+    waiting_for_vip_duration = State()
+    waiting_for_vip_reason = State()
+    waiting_for_remove_vip_user = State()
+    waiting_for_remove_vip_reason = State()
+    waiting_for_fine_user = State()
+    waiting_for_fine_amount = State()
+    waiting_for_fine_reason = State()
+    waiting_for_warn_admin = State()
+    waiting_for_warn_reason = State()
+    waiting_for_new_admin = State()
+    waiting_for_admin_reason = State()
+    waiting_for_remove_admin = State()
+    waiting_for_remove_admin_reason = State()
+    waiting_for_info_search = State()
+    waiting_for_delete_info_type = State()
+    waiting_for_delete_field = State()
+    waiting_for_unban_user = State()
     waiting_for_ban_user = State()
+    waiting_for_unban_reason = State()
     waiting_for_ban_duration = State()
     waiting_for_ban_reason = State()
-  
     
 async def init_db():
     """Initialize database tables"""
@@ -123,23 +144,22 @@ async def init_db():
         # Create users table
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    first_name TEXT,
-    last_name TEXT,
-    referral_code TEXT UNIQUE,
-    balance REAL DEFAULT 0.0,
-    is_vip BOOLEAN DEFAULT FALSE,
-    vip_duration INTEGER DEFAULT 0,
-    vip_expiration DATETIME,
-    is_banned BOOLEAN DEFAULT FALSE,
-    ban_expiration DATETIME,
-    agreement_accepted BOOLEAN DEFAULT FALSE,
-    registration_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-    referrals_count INTEGER DEFAULT 0,
-    referral_balance REAL DEFAULT 0.0,
-    warnings INTEGER DEFAULT 0
-)
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                referral_code TEXT UNIQUE,
+                balance REAL DEFAULT 0.0,
+                is_vip BOOLEAN DEFAULT FALSE,
+                vip_expiration DATETIME,
+                is_banned BOOLEAN DEFAULT FALSE,
+                ban_expiration DATETIME,
+                agreement_accepted BOOLEAN DEFAULT FALSE,
+                registration_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                referrals_count INTEGER DEFAULT 0,
+                referral_balance REAL DEFAULT 0.0,
+                warnings INTEGER DEFAULT 0
+            )
         ''')
 
         # Create info_base table
@@ -240,7 +260,6 @@ async def init_db():
                 payment_type TEXT,
                 payment_status TEXT,
                 invoice_id TEXT UNIQUE,
-                vip_duration INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
@@ -331,17 +350,10 @@ async def check_subscription(user_id: int) -> bool:
         return False
 
 async def generate_unique_referral_code() -> str:
-    """Generate unique referral code"""
     while True:
-        # Используем импортированные random и string
-        chars = string.ascii_uppercase + string.digits
-        code = ''.join(random.choices(chars, k=8))
-        
+        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         async with aiosqlite.connect('bot_database.db') as db:
-            async with db.execute(
-                'SELECT 1 FROM users WHERE referral_code = ?', 
-                (code,)
-            ) as cursor:
+            async with db.execute('SELECT 1 FROM users WHERE referral_code = ?', (code,)) as cursor:
                 if not await cursor.fetchone():
                     return code
 
@@ -415,27 +427,18 @@ async def cmd_start(message: Message, state: FSMContext):
             )
 
 async def register_user(user: types.User, is_owner: bool = False):
-    """Register new user in the database"""
-    try:
-        async with aiosqlite.connect('bot_database.db') as db:
-            referral_code = await generate_unique_referral_code()
-            current_time = datetime.now(timezone.utc)
-            
-            await db.execute('''
-                INSERT INTO users (
-                    user_id, username, first_name, last_name,
-                    referral_code, is_vip, registration_date, 
-                    agreement_accepted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                user.id, user.username, user.first_name, user.last_name,
-                referral_code, is_owner, current_time, True
-            ))
-            await db.commit()
-            
-    except Exception as e:
-        logger.error(f"Error registering user: {e}\n{traceback.format_exc()}")
-        raise
+    async with aiosqlite.connect('bot_database.db') as db:
+        referral_code = await generate_unique_referral_code()
+        await db.execute('''
+            INSERT INTO users (
+                user_id, username, first_name, last_name,
+                referral_code, is_vip, registration_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            user.id, user.username, user.first_name, user.last_name,
+            referral_code, is_owner, datetime.now(timezone.utc)
+        ))
+        await db.commit()
 
 @dp.callback_query(F.data == "check_subscription")
 async def callback_check_subscription(callback: CallbackQuery, state: FSMContext):
@@ -471,14 +474,6 @@ async def callback_accept_agreement(callback: CallbackQuery, state: FSMContext):
                 reply_markup=get_main_menu_keyboard()
             )
             return
-        
-        # Update agreement_accepted status
-        await db.execute('''
-            UPDATE users 
-            SET agreement_accepted = TRUE 
-            WHERE user_id = ?
-        ''', (user_id,))
-        await db.commit()
         
         await callback.message.edit_text(
             "🔑 Пожалуйста, введите код приглашения:",
@@ -942,8 +937,8 @@ async def process_vip_purchase(callback: CallbackQuery):
         logger.error(f"Error creating invoice: {e}")
         await callback.answer("❌ Ошибка создания счета. Попробуйте позже.", show_alert=True)
 
+# Payment processing
 async def check_payments():
-    """Check payment statuses"""
     while True:
         try:
             async with aiosqlite.connect('bot_database.db') as db:
@@ -958,70 +953,64 @@ async def check_payments():
                     user_id, invoice_id, payment_type, amount, vip_duration = payment
                     
                     try:
-                        invoices = await crypto.get_invoices(invoice_ids=invoice_id)
+                        invoice = await crypto.get_invoices(invoice_ids=invoice_id)
                         
-                        # Проверяем, что invoices не пустой и берем первый элемент
-                        if invoices and len(invoices) > 0:
-                            invoice = invoices[0]  # Берем первый элемент списка
-                            
-                            if hasattr(invoice, 'status') and invoice.status == 'paid':
-                                if payment_type == 'balance':
-                                    await db.execute('''
-                                        UPDATE users 
-                                        SET balance = balance + ?
-                                        WHERE user_id = ?
-                                    ''', (amount, user_id))
-                                    
-                                    await bot.send_message(
-                                        user_id,
-                                        f"✅ Ваш баланс пополнен на {amount} баллов!"
-                                    )
-                                    
-                                elif payment_type == 'vip':
-                                    if vip_duration == 0:
-                                        expiration = None
-                                    else:
-                                        expiration = datetime.now(timezone.utc) + timedelta(days=vip_duration)
-                                    
-                                    await db.execute('''
-                                        UPDATE users 
-                                        SET is_vip = TRUE,
-                                            vip_expiration = ?
-                                        WHERE user_id = ?
-                                    ''', (expiration, user_id))
-                                    
-                                    duration_text = "навсегда" if vip_duration == 0 else f"на {vip_duration} дней"
-                                    await bot.send_message(
-                                        user_id,
-                                        f"✅ VIP статус активирован {duration_text}!"
-                                    )
+                        if invoice and invoice.status == 'paid':
+                            if payment_type == 'balance':
+                                await db.execute('''
+                                    UPDATE users 
+                                    SET balance = balance + ?
+                                    WHERE user_id = ?
+                                ''', (amount, user_id))
+                                
+                                await bot.send_message(
+                                    user_id,
+                                    f"✅ Ваш баланс пополнен на {amount} баллов!"
+                                )
+                                
+                            elif payment_type == 'vip':
+                                if vip_duration == 0:
+                                    expiration = None
+                                else:
+                                    expiration = datetime.now(timezone.utc) + timedelta(days=vip_duration)
                                 
                                 await db.execute('''
-                                    UPDATE payments 
-                                    SET payment_status = 'completed'
-                                    WHERE invoice_id = ?
-                                ''', (invoice_id,))
+                                    UPDATE users 
+                                    SET is_vip = TRUE,
+                                        vip_expiration = ?
+                                    WHERE user_id = ?
+                                ''', (expiration, user_id))
                                 
-                                await log_action(
+                                duration_text = "навсегда" if vip_duration == 0 else f"на {vip_duration} дней"
+                                await bot.send_message(
                                     user_id,
-                                    f"payment_{payment_type}",
-                                    {"amount": amount, "invoice_id": invoice_id}
+                                    f"✅ VIP статус активирован {duration_text}!"
                                 )
+                            
+                            await db.execute('''
+                                UPDATE payments 
+                                SET payment_status = 'completed'
+                                WHERE invoice_id = ?
+                            ''', (invoice_id,))
+                            
+                            await log_action(
+                                user_id,
+                                f"payment_{payment_type}",
+                                {"amount": amount, "invoice_id": invoice_id}
+                            )
                             
                     except Exception as e:
                         logger.error(f"Error checking payment {invoice_id}: {e}")
-                        continue
                 
                 await db.commit()
                 
         except Exception as e:
             logger.error(f"Error in payment checker: {e}")
             
-        await asyncio.sleep(60)
-        
+        await asyncio.sleep(60)  # Check every minute
+# Admin panel and report system
 @dp.message(Command("owenu"))
 async def admin_menu(message: Message):
-    # Проверяем только на владельца, так как это команда только для него
     if not await is_owner(message.from_user.id):
         return
     
@@ -1414,15 +1403,13 @@ async def process_report_decision(callback: CallbackQuery, state: FSMContext):
         
         await db.commit()
 
-
-        
 @dp.message(F.text == "📊 Статистика бота")
 async def show_bot_statistics(message: Message):
     if not await is_owner(message.from_user.id):
         return
-    # Существующий код...
+        
     async with aiosqlite.connect('bot_database.db') as db:
-        # Get general statistics
+        # Общая статистика пользователей
         async with db.execute('''
             SELECT 
                 COUNT(*) as total_users,
@@ -1431,844 +1418,86 @@ async def show_bot_statistics(message: Message):
                 SUM(referrals_count) as total_referrals
             FROM users
         ''') as cursor:
-            stats = await cursor.fetchone()
-            
-        # Get payment statistics
+            users_stats = await cursor.fetchone()
+        
+        # Статистика админов
         async with db.execute('''
             SELECT 
+                COUNT(*) as total_admins,
+                SUM(approved_count) as total_approved,
+                SUM(rejected_count) as total_rejected
+            FROM admins
+        ''') as cursor:
+            admin_stats = await cursor.fetchone()
+            
+        # Статистика платежей
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_transactions,
                 SUM(CASE WHEN payment_type = 'balance' THEN amount ELSE 0 END) as balance_payments,
-                SUM(CASE WHEN payment_type = 'vip' THEN amount ELSE 0 END) as vip_payments,
-                COUNT(*) as total_payments
-            FROM payments 
+                SUM(CASE WHEN payment_type = 'vip' THEN amount ELSE 0 END) as vip_payments
+            FROM payments
             WHERE payment_status = 'completed'
         ''') as cursor:
-            payments = await cursor.fetchone()
+            payment_stats = await cursor.fetchone()
             
-        # Get database size
-        db_size = os.path.getsize('bot_database.db') / (1024 * 1024)  # Size in MB
-        
-        # Get report statistics
+        # Статистика информационной базы
         async with db.execute('''
             SELECT 
-                COUNT(*) as total_reports,
-                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved_reports,
-                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_reports
-            FROM reports
+                COUNT(DISTINCT telegram_id) as total_entries,
+                COUNT(first_name) + COUNT(last_name) + COUNT(middle_name) +
+                COUNT(birth_date) + COUNT(phone_number) + COUNT(address) +
+                COUNT(workplace) + COUNT(social_networks) as total_fields
+            FROM info_base
         ''') as cursor:
-            reports = await cursor.fetchone()
+            info_stats = await cursor.fetchone()
+            
+        # Статистика банов
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_bans,
+                SUM(CASE WHEN ban_expiration IS NULL THEN 1 ELSE 0 END) as permanent_bans
+            FROM banned_users
+        ''') as cursor:
+            ban_stats = await cursor.fetchone()
+            
+        # Размер базы данных
+        db_size = os.path.getsize('bot_database.db') / (1024 * 1024)  # В МБ
         
         stats_text = (
-            "📊 Статистика бота\n\n"
-            f"👥 Всего пользователей: {stats[0]}\n"
-            f"👑 VIP пользователей: {stats[1]}\n"
-            f"💰 Общий баланс пользователей: {stats[2]:.2f} баллов\n"
-            f"👥 Всего рефералов: {stats[3]}\n\n"
-            f"💵 Платежи:\n"
-            f"- За баллы: ${payments[0]:.2f}\n"
-            f"- За VIP: ${payments[1]:.2f}\n"
-            f"- Всего транзакций: {payments[2]}\n\n"
-            f"📝 Доносы:\n"
-            f"- Всего: {reports[0]}\n"
-            f"- Подтверждено: {reports[1]}\n"
-            f"- Отклонено: {reports[2]}\n\n"
-            f"💾 Размер базы данных: {db_size:.2f} MB\n"
-            f"📅 Дата запуска: {BOT_START_DATE}"
-        )
-        
-        await message.answer(stats_text)
-
-@dp.message(F.text == "💰 Выдать баллы")
-async def give_balance(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer("👤 Введите ID пользователя:")
-    await state.set_state(UserStates.waiting_for_balance_user)
-
-@dp.message(UserStates.waiting_for_balance_user)
-async def process_balance_user(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Неверный формат ID. Попробуйте снова:")
-        return
-    
-    user_id = int(message.text)
-    await state.update_data(target_user_id=user_id)
-    await message.answer("💰 Введите количество баллов:")
-    await state.set_state(UserStates.waiting_for_balance_amount)
-
-@dp.message(UserStates.waiting_for_balance_amount)
-async def process_balance_amount(message: Message, state: FSMContext):
-    try:
-        amount = float(message.text)
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Неверный формат количества. Введите положительное число:")
-        return
-    
-    await state.update_data(amount=amount)
-    await message.answer("📝 Введите причину начисления:")
-    await state.set_state(UserStates.waiting_for_balance_reason)
-
-@dp.message(UserStates.waiting_for_balance_reason)
-async def process_balance_reason(message: Message, state: FSMContext):
-    user_data = await state.get_data()
-    target_id = user_data['target_user_id']
-    amount = user_data['amount']
-    reason = message.text
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('''
-            UPDATE users 
-            SET balance = balance + ?
-            WHERE user_id = ?
-        ''', (amount, target_id))
-        await db.commit()
-    
-    try:
-        await bot.send_message(
-            target_id,
-            f"💰 На ваш баланс начислено {amount} баллов\n"
-            f"📝 Причина: {reason}"
-        )
-    except Exception as e:
-        logger.error(f"Error sending balance notification: {e}")
-    
-    await message.answer(
-        f"✅ Баллы успешно начислены\n"
-        f"👤 Пользователь: {target_id}\n"
-        f"💰 Количество: {amount}\n"
-        f"📝 Причина: {reason}"
-    )
-    await state.clear()
-
-@dp.message(lambda message: message.from_user.id in ADMIN_IDS and message.text == "👥 Статистика админов")
-async def show_admin_statistics(message: Message):
-    if not await is_owner(message.from_user.id):
-        return
-        
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute('''
-            SELECT 
-                username,
-                first_name,
-                last_name,
-                approved_count,
-                rejected_count,
-                warnings,
-                registration_date,
-                (approved_count + rejected_count) as total_reports
-            FROM admins
-            ORDER BY total_reports DESC
-        ''') as cursor:
-            admins = await cursor.fetchall()
+            "📊 СТАТИСТИКА БОТА\n\n"
+            f"👥 Пользователи:\n"
+            f"├ Всего: {users_stats[0]}\n"
+            f"├ VIP: {users_stats[1]}\n"
+            f"├ Общий баланс: {users_stats[2]:.2f} баллов\n"
+            f"└ Рефералов: {users_stats[3]}\n\n"
             
-        if not admins:
-            await message.answer("ℹ️ Нет активных администраторов.")
-            return
+            f"👮 Администраторы:\n"
+            f"├ Всего: {admin_stats[0]}\n"
+            f"├ Одобрено: {admin_stats[1]}\n"
+            f"└ Отклонено: {admin_stats[2]}\n\n"
             
-        stats_text = "👥 Статистика администраторов:\n\n"
-        
-        for i, admin in enumerate(admins, 1):
-            username, first_name, last_name, approved, rejected, warnings, reg_date, total = admin
-            reg_date = datetime.fromisoformat(reg_date).strftime("%d.%m.%Y")
+            f"💰 Платежи:\n"
+            f"├ Всего транзакций: {payment_stats[0]}\n"
+            f"├ За баллы: ${payment_stats[1]:.2f}\n"
+            f"└ За VIP: ${payment_stats[2]:.2f}\n\n"
             
-            stats_text += (
-                f"{i}. {first_name} {last_name} (@{username})\n"
-                f"✅ Одобрено: {approved}\n"
-                f"❌ Отклонено: {rejected}\n"
-                f"⚠️ Предупреждения: {warnings}/3\n"
-                f"📅 На посту с: {reg_date}\n"
-                f"📊 Рейтинг эффективности: {(approved/(total or 1))*100:.1f}%\n\n"
-            )
-        
-        await message.answer(stats_text)
-# Additional admin functions
-async def remove_admin(admin_id: int, reason: str):
-    """Remove admin and clean up chat history"""
-    try:
-        # Clean chat history
-        await bot.delete_chat_history(admin_id)
-        # Leave chat
-        await bot.leave_chat(admin_id)
-    except Exception as e:
-        logger.error(f"Error cleaning admin chat: {e}")
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('DELETE FROM admins WHERE admin_id = ?', (admin_id,))
-        await db.commit()
-        
-        await log_action(
-            OWNER_ID,
-            "admin_removed",
-            {"admin_id": admin_id, "reason": reason}
-        )
-        
-@dp.message(F.text == "🔒 Бан")
-async def ban_user_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer("👤 Введите ID пользователя:")
-    await state.set_state(UserStates.waiting_for_ban_user)
-
-@dp.message(UserStates.waiting_for_ban_user)
-async def process_ban_user(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Неверный формат ID. Попробуйте снова:")
-        return
-    
-    user_id = int(message.text)
-    await state.update_data(ban_user_id=user_id)
-    await message.answer(
-        "⏰ Введите время бана в часах\n"
-        "0 = вечный бан\n"
-        "От 1 до 100000 часов"
-    )
-    await state.set_state(UserStates.waiting_for_ban_duration)
-    
-@dp.message(F.text == "➕ Добавить админа")
-async def add_admin_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    
-    await message.answer("👤 Введите ID пользователя для назначения администратором:")
-    await state.set_state("waiting_for_admin_id")
-
-@dp.message(lambda message: message.from_user.id == OWNER_ID and message.state == "waiting_for_admin_id")
-async def process_add_admin(message: Message, state: FSMContext):
-    try:
-        new_admin_id = int(message.text)
-        
-        async with aiosqlite.connect('bot_database.db') as db:
-            # Check if user exists in bot
-            async with db.execute(
-                'SELECT 1 FROM users WHERE user_id = ?',
-                (new_admin_id,)
-            ) as cursor:
-                if not await cursor.fetchone():
-                    await message.answer("❌ Пользователь не найден в базе данных бота.")
-                    await state.clear()
-                    return
+            f"📁 Информационная база:\n"
+            f"├ Всего записей: {info_stats[0]}\n"
+            f"└ Всего полей: {info_stats[1]}\n\n"
             
-            # Check if already admin
-            async with db.execute(
-                'SELECT 1 FROM admins WHERE admin_id = ?',
-                (new_admin_id,)
-            ) as cursor:
-                if await cursor.fetchone():
-                    await message.answer("❌ Пользователь уже является администратором.")
-                    await state.clear()
-                    return
-        
-        await message.answer("📝 Укажите причину назначения:")
-        await state.update_data(new_admin_id=new_admin_id)
-        await state.set_state("waiting_for_admin_reason")
-        
-    except ValueError:
-        await message.answer("❌ Неверный формат ID.")
-        await state.clear()
-
-@dp.message(lambda message: message.from_user.id == OWNER_ID and message.state == "waiting_for_admin_reason")
-async def process_add_admin_reason(message: Message, state: FSMContext):
-    user_data = await state.get_data()
-    new_admin_id = user_data['new_admin_id']
-    reason = message.text
-    
-    try:
-        user = await bot.get_chat_member(new_admin_id, new_admin_id)
-        
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="✅ Принять", callback_data="accept_admin"),
-                    InlineKeyboardButton(text="❌ Отказаться", callback_data="decline_admin")
-                ]
-            ]
-        )
-        
-        await bot.send_message(
-            new_admin_id,
-            f"👑 Вам предложена должность администратора!\n\n"
-            f"📝 Пожалуйста, ознакомьтесь с админским соглашением:\n"
-            f"{ADMIN_AGREEMENT_LINK}\n\n"
-            f"Причина назначения: {reason}",
-            reply_markup=keyboard
-        )
-        
-        await message.answer("✅ Предложение отправлено пользователю.")
-        await state.clear()
-        
-    except Exception as e:
-        await message.answer("❌ Ошибка при отправке предложения пользователю.")
-        logger.error(f"Error adding admin: {e}")
-        await state.clear()
-
-@dp.callback_query(F.data == "accept_admin")
-async def accept_admin_position(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('''
-            INSERT INTO admins (
-                admin_id, username, first_name, last_name
-            ) VALUES (?, ?, ?, ?)
-        ''', (
-            user_id,
-            callback.from_user.username,
-            callback.from_user.first_name,
-            callback.from_user.last_name
-        ))
-        await db.commit()
-    
-    await callback.message.edit_text(
-        "✅ Вы приняли должность администратора!\n"
-        "Используйте команду /admin для доступа к панели управления."
-    )
-    
-    await bot.send_message(
-        OWNER_ID,
-        f"✅ Пользователь {callback.from_user.full_name} принял должность администратора."
-    )
-
-@dp.message(F.text == "🔎 Просмотр информации")
-async def view_info_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    
-    await message.answer(
-        "🔍 Введите ID пользователя или имя для поиска:"
-    )
-    await state.set_state("waiting_for_info_search")
-
-@dp.message(lambda message: message.from_user.id == OWNER_ID and message.state == "waiting_for_info_search")
-async def process_info_search(message: Message, state: FSMContext):
-    search_query = message.text.strip()
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        if search_query.isdigit():
-            # Search by ID
-            async with db.execute('''
-                SELECT * FROM users 
-                WHERE user_id = ?
-            ''', (int(search_query),)) as cursor:
-                user = await cursor.fetchone()
-                users = [user] if user else []
-
-async def check_admin_warnings(admin_id: int) -> bool:
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute(
-            'SELECT warnings FROM admins WHERE admin_id = ?',
-            (admin_id,)
-        ) as cursor:
-            result = await cursor.fetchone()
-            if result and result[0] >= 3:
-                await remove_admin(admin_id, "Превышено количество предупреждений")
-                return False
-    return True
-
-async def add_admin_warning(admin_id: int, reason: str):
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('''
-            UPDATE admins 
-            SET warnings = warnings + 1
-            WHERE admin_id = ?
-        ''', (admin_id,))
-        
-        await db.execute('''
-            INSERT INTO admin_warnings (admin_id, warning_reason)
-            VALUES (?, ?)
-        ''', (admin_id, reason))
-        
-        # Check if admin should be removed
-        async with db.execute(
-            'SELECT warnings FROM admins WHERE admin_id = ?',
-            (admin_id,)
-        ) as cursor:
-            result = await cursor.fetchone()
-            if result and result[0] >= 3:
-                await remove_admin(admin_id, "Превышено количество предупреждений")
-        
-        await db.commit()
-        
-        try:
-            await bot.send_message(
-                admin_id,
-                f"⚠️ Вам выдано предупреждение!\n"
-                f"📝 Причина: {reason}\n"
-                f"📊 Всего предупреждений: {result[0] if result else 0}/3"
-            )
-        except Exception as e:
-            logger.error(f"Error sending warning notification: {e}")
-
-async def check_admin_deadlines():
-    """Check admin report deadlines and VIP expiration"""
-    while True:
-        try:
-            async with aiosqlite.connect('bot_database.db') as db:
-                # Check report deadlines
-                async with db.execute('''
-                    SELECT 
-                        admin_id,
-                        target_user_id,
-                        check_start_time
-                    FROM reports 
-                    WHERE status = 'checking'
-                ''') as cursor:
-                    checking_reports = await cursor.fetchall()
-                
-                current_time = datetime.now(timezone.utc)
-                for admin_id, target_id, start_time in checking_reports:
-                    start_time = datetime.fromisoformat(start_time)
-                    if current_time - start_time > timedelta(hours=23, minutes=50):
-                        # Send warning to admin
-                        await bot.send_message(
-                            admin_id,
-                            "⚠️ До окончания проверки осталось 10 минут!"
-                        )
-                    elif current_time - start_time > timedelta(hours=24):
-                        # Add warning and possibly remove admin
-                        await db.execute('''
-                            UPDATE admins 
-                            SET warnings = warnings + 3
-                            WHERE admin_id = ?
-                        ''', (admin_id,))
-                        
-                        async with db.execute(
-                            'SELECT warnings FROM admins WHERE admin_id = ?',
-                            (admin_id,)
-                        ) as cursor:
-                            warnings = (await cursor.fetchone())[0]
-                        
-                        if warnings >= 3:
-                            await remove_admin(
-                                admin_id,
-                                "Превышение времени проверки доноса"
-                            )
-                
-                # Check VIP expiration
-                async with db.execute('''
-                    SELECT user_id, vip_expiration
-                    FROM users 
-                    WHERE is_vip = TRUE AND vip_expiration IS NOT NULL
-                ''') as cursor:
-                    vip_users = await cursor.fetchall()
-                
-                for user_id, expiration in vip_users:
-                    expiry = datetime.fromisoformat(expiration)
-                    if current_time > expiry:
-                        await db.execute('''
-                            UPDATE users 
-                            SET is_vip = FALSE,
-                                vip_expiration = NULL
-                            WHERE user_id = ?
-                        ''', (user_id,))
-                        
-                        await bot.send_message(
-                            user_id,
-                            "ℹ️ Ваш VIP статус истек."
-                        )
-                
-                await db.commit()
-                
-        except Exception as e:
-            logger.error(f"Error in admin deadline checker: {e}")
-        
-        await asyncio.sleep(60)  # Check every minute
-
-async def clean_old_data():
-    """Clean old data and maintain database"""
-    while True:
-        try:
-            async with aiosqlite.connect('bot_database.db') as db:
-                current_time = datetime.now(timezone.utc)
-                
-                # Clean old pending reports
-                await db.execute('''
-                    DELETE FROM reports 
-                    WHERE status = 'pending' 
-                    AND report_date < ?
-                ''', (current_time - timedelta(days=7),))
-                
-                # Clean old completed payments
-                await db.execute('''
-                    DELETE FROM payments 
-                    WHERE payment_status = 'completed' 
-                    AND payment_date < ?
-                ''', (current_time - timedelta(days=30),))
-                
-                # Clean old action logs
-                await db.execute('''
-                    DELETE FROM action_logs 
-                    WHERE action_date < ?
-                ''', (current_time - timedelta(days=90),))
-                
-                await db.commit()
-                
-                # Vacuum database to reclaim space
-                await db.execute('VACUUM')
-                
-        except Exception as e:
-            logger.error(f"Error in database cleaner: {e}")
-        
-        await asyncio.sleep(86400)  # Run once per day
-
-async def update_statistics():
-    """Update bot statistics"""
-    while True:
-        try:
-            async with aiosqlite.connect('bot_database.db') as db:
-                async with db.execute('''
-                    SELECT 
-                        COUNT(*) as total_users,
-                        SUM(CASE WHEN is_vip = 1 THEN 1 ELSE 0 END) as vip_users,
-                        SUM(referrals_count) as total_referrals
-                    FROM users
-                ''') as cursor:
-                    users_stats = await cursor.fetchone()
-                
-                async with db.execute('''
-                    SELECT COUNT(*) FROM admins
-                ''') as cursor:
-                    admin_count = (await cursor.fetchone())[0]
-                
-                async with db.execute('''
-                    SELECT SUM(amount) 
-                    FROM payments 
-                    WHERE payment_status = 'completed'
-                ''') as cursor:
-                    total_payments = (await cursor.fetchone())[0] or 0
-                
-                await db.execute('''
-                    INSERT INTO statistics (
-                        total_users,
-                        total_admins,
-                        total_payments,
-                        total_referrals,
-                        stat_date
-                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (
-                    users_stats[0],
-                    admin_count,
-                    total_payments,
-                    users_stats[2]
-                ))
-                
-                await db.commit()
-                
-        except Exception as e:
-            logger.error(f"Error in statistics updater: {e}")
-        
-        await asyncio.sleep(3600)  # Update every hour
-
-def setup_security():
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('bot.log'),
-            logging.StreamHandler()
-        ]
-    )
-    
-    # Set up API request limits
-    dp.message.middleware(ThrottlingMiddleware(rate_limit=1))
-    
-@dp.errors()
-async def error_handler(event: ErrorEvent):
-    """Handle errors in the bot"""
-    try:
-        error_msg = (
-            f"Error: {event.exception}\n"
-            f"Update type: {type(event.update)}\n"
-            f"Update content: {event.update}\n"
-            f"Traceback:\n{traceback.format_exc()}"
-        )
-        logger.error(error_msg)
-        
-        if isinstance(event.exception, SQLInjectionError):
-            user_id = getattr(event.update, 'from_user', None)
-            if user_id:
-                async with aiosqlite.connect('bot_database.db') as db:
-                    await db.execute('''
-                        UPDATE users 
-                        SET warnings = warnings + 1
-                        WHERE user_id = ?
-                    ''', (user_id.id,))
-                    
-                    async with db.execute(
-                        'SELECT warnings FROM users WHERE user_id = ?',
-                        (user_id.id,)
-                    ) as cursor:
-                        warnings = (await cursor.fetchone())[0]
-                    
-                    if warnings >= 3:
-                        await ban_user(user_id.id, "Попытка SQL-инъекции", 0)
-                    
-                    await db.commit()
+            f"🚫 Баны:\n"
+            f"├ Всего: {ban_stats[0]}\n"
+            f"└ Вечных: {ban_stats[1]}\n\n"
             
-            await bot.send_message(
-                OWNER_ID,
-                f"⚠️ Попытка SQL-инъекции!\n"
-                f"Пользователь: {user_id.id if user_id else 'Unknown'}"
-            )
-        
-    except Exception as e:
-        logger.error(f"Critical error in error handler: {e}\n{traceback.format_exc()}")
-        
-class SQLInjectionError(Exception):
-    pass
-
-def check_sql_injection(text: str) -> bool:
-    """Check for SQL injection attempts"""
-    suspicious_patterns = [
-        r'\bSELECT\b',
-        r'\bINSERT\b',
-        r'\bUPDATE\b',
-        r'\bDELETE\b',
-        r'\bDROP\b',
-        r'\bUNION\b',
-        r'--',
-        r';',
-        r'\/\*',
-        r'\*\/',
-        r'\bOR\b.*\b=\b',
-        r'\bAND\b.*\b=\b'
-    ]
-    
-    for pattern in suspicious_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            raise SQLInjectionError("Подозрительный ввод")
-    
-    return False
-
-# Bot startup
-async def on_startup():
-    """Setup bot on startup"""
-    setup_security()
-    
-    # Initialize database
-    await init_db()
-    
-    # Start background tasks
-    asyncio.create_task(check_payments())
-    asyncio.create_task(check_admin_deadlines())
-    asyncio.create_task(clean_old_data())
-    asyncio.create_task(update_statistics())
-    
-    logger.info("Bot started successfully!")
-
-
-async def main():
-    """Main function to start the bot"""
-    # Удаляем вебхук перед запуском
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Set bot commands
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="help", description="Помощь"),
-        BotCommand(command="profile", description="Профиль")
-    ])
-    
-    # Register startup handler
-    dp.startup.register(on_startup)
-    
-    # Start bot
-    try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        await bot.session.close()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped!")
-
-# === ДОБАВЛЕННЫЕ ЧАСТИ ИЗ up.py ===
-
-# === ОБНОВЛЕННЫЕ СОСТОЯНИЯ ДЛЯ КЛАССА UserStates ===
-waiting_for_info_user = State()          # Для добавления информации
-waiting_for_info_type = State()          # Тип добавляемой информации
-waiting_for_info_value = State()         # Значение добавляемой информации
-waiting_for_delete_info_user = State()   # Для удаления информации
-waiting_for_delete_info_type = State()   # Выбор типа информации для удаления
-waiting_for_referral_user = State()      # ID пользователя для начисления рефералов
-waiting_for_referral_count = State()     # Количество начисляемых рефералов
-waiting_for_referral_reason = State()    # Причина начисления рефералов
-waiting_for_vip_user = State()           # ID для выдачи VIP
-waiting_for_vip_duration = State()       # Длительность VIP статуса
-waiting_for_vip_reason = State()         # Причина выдачи VIP
-waiting_for_remove_vip_user = State()    # ID для снятия VIP
-waiting_for_remove_vip_reason = State()  # Причина снятия VIP
-waiting_for_fine_user = State()          # ID для штрафа
-waiting_for_fine_amount = State()        # Сумма штрафа
-waiting_for_fine_reason = State()        # Причина штрафа
-waiting_for_delete_user = State()        # ID для удаления пользователя
-waiting_for_delete_confirm = State()     # Подтверждение удаления
-
-# === ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ КНОПОК ПАНЕЛИ ВЛАДЕЛЬЦА ===
-
-@dp.message(F.text == "➕ Добавить информацию")
-async def add_info_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer(
-        "👤 Введите ID пользователя для добавления информации:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
+            f"💾 Размер базы: {db_size:.2f} МБ\n"
+            f"📅 Дата запуска: {BOT_START_DATE}\n"
+            f"⏰ Аптайм: {(datetime.now() - datetime.fromisoformat(BOT_START_DATE)).days} дней"
         )
-    )
-    await state.set_state(UserStates.waiting_for_info_user)
-
-@dp.message(UserStates.waiting_for_info_user)
-async def process_info_user(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
         
-    if not message.text.isdigit() or len(message.text) < 9:
-        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
-        return
+        await message.answer(stats_text, reply_markup=get_admin_keyboard())
         
-    user_id = int(message.text)
-    await state.update_data(target_user_id=user_id)
-    
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="👤 Имя"), KeyboardButton(text="👥 Фамилия")],
-            [KeyboardButton(text="👤 Отчество"), KeyboardButton(text="📅 Возраст")],
-            [KeyboardButton(text="📱 Номер"), KeyboardButton(text="🏠 Место жительства")],
-            [KeyboardButton(text="💼 Место работы"), KeyboardButton(text="🌐 Сети")],
-            [KeyboardButton(text="↩️ Отмена")]
-        ],
-        resize_keyboard=True
-    )
-    
-    await message.answer("✍️ Выберите тип информации:", reply_markup=keyboard)
-    await state.set_state(UserStates.waiting_for_info_type)
-
-@dp.message(UserStates.waiting_for_info_type)
-async def process_info_type(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
         
-    info_types = {
-        "👤 Имя": "first_name",
-        "👥 Фамилия": "last_name",
-        "👤 Отчество": "middle_name",
-        "📅 Возраст": "birth_date",
-        "📱 Номер": "phone_number",
-        "🏠 Место жительства": "address",
-        "💼 Место работы": "workplace",
-        "🌐 Сети": "social_networks"
-    }
-    
-    if message.text not in info_types:
-        await message.answer("❌ Неверный тип информации. Используйте клавиатуру.")
-        return
-        
-    await state.update_data(info_type=info_types[message.text])
-    await message.answer(
-        "✍️ Введите информацию:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-    await state.set_state(UserStates.waiting_for_info_value)
-
-@dp.message(UserStates.waiting_for_info_value)
-async def process_info_value(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    user_data = await state.get_data()
-    target_id = user_data['target_user_id']
-    info_type = user_data['info_type']
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        # Проверяем существование записи
-        async with db.execute(
-            'SELECT 1 FROM info_base WHERE telegram_id = ?',
-            (target_id,)
-        ) as cursor:
-            exists = await cursor.fetchone()
-            
-        if exists:
-            await db.execute(f'''
-                UPDATE info_base 
-                SET {info_type} = ?,
-                    admin_approver_id = ?,
-                    info_date = CURRENT_TIMESTAMP
-                WHERE telegram_id = ?
-            ''', (message.text, message.from_user.id, target_id))
-        else:
-            fields = ['telegram_id', info_type, 'admin_approver_id']
-            values = [target_id, message.text, message.from_user.id]
-            await db.execute(f'''
-                INSERT INTO info_base ({', '.join(fields)})
-                VALUES ({', '.join(['?' for _ in fields])})
-            ''', values)
-            
-        await db.commit()
-        
-    await message.answer(
-        "✅ Информация успешно добавлена!",
-        reply_markup=get_admin_keyboard()
-    )
-    await state.clear()
-
-@dp.message(F.text == "❌ Удалить информацию")
-async def delete_info_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer(
-        "👤 Введите ID пользователя для удаления информации:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-    await state.set_state(UserStates.waiting_for_delete_info_user)
-
-@dp.message(F.text == "📊 Начисление рефералов")
-async def add_referrals_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer(
-        "👤 Введите ID пользователя для начисления рефералов:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-    await state.set_state(UserStates.waiting_for_referral_user)
-
-@dp.message(UserStates.waiting_for_referral_user)
-async def process_referral_user(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    if not message.text.isdigit() or len(message.text) < 9:
-        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
-        return
-        
-    user_id = int(message.text)
-    await state.update_data(target_user_id=user_id)
-    await message.answer("📊 Введите количество рефералов:")
-    await state.set_state(UserStates.waiting_for_referral_count)
-
-# === ПРОДОЛЖЕНИЕ ОБРАБОТЧИКОВ ПАНЕЛИ ВЛАДЕЛЬЦА ===
-
 @dp.message(F.text == "👥 Статистика админов")
 async def show_admin_statistics(message: Message):
     if not await is_owner(message.from_user.id):
@@ -2312,10 +1541,209 @@ async def show_admin_statistics(message: Message):
                 f"📊 Рейтинг эффективности: {(approved/(total or 1))*100:.1f}%\n\n"
             )
         
-        await message.answer(stats_text, reply_markup=get_admin_keyboard())
+        async def remove_admin(admin_id: int, reason: str):
+          try:
+          	await bot.delete_chat_history(admin_id)
+          	await bot.leave_chat(admin_id)
+          except Exception as e:
+              logger.error(f"Error cleaning admin chat: {e}")
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('DELETE FROM admins WHERE admin_id = ?', (admin_id,))
+        await db.commit()
         
-# === ПРОДОЛЖЕНИЕ ОБРАБОТЧИКОВ ПАНЕЛИ ВЛАДЕЛЬЦА ===
+    await log_action(
+        OWNER_ID,
+        "admin_removed",
+        {"admin_id": admin_id, "reason": reason}
+    )
 
+@dp.message(F.text == "➕ Добавить админа")
+async def add_admin_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID нового администратора:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_new_admin)
+
+@dp.message(UserStates.waiting_for_new_admin)
+async def process_new_admin(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    # Проверяем, не является ли пользователь уже админом
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT 1 FROM admins WHERE admin_id = ?',
+            (user_id,)
+        ) as cursor:
+            if await cursor.fetchone():
+                await message.answer("❌ Этот пользователь уже является администратором.")
+                await state.clear()
+                return
+                
+        # Проверяем существование пользователя в базе
+        async with db.execute(
+            'SELECT username, first_name, last_name FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            user = await cursor.fetchone()
+            
+        if not user:
+            await message.answer("❌ Пользователь не найден в базе данных.")
+            await state.clear()
+            return
+            
+    await state.update_data(
+        new_admin_id=user_id,
+        new_admin_info=f"@{user[0] or ''} ({user[1] or ''} {user[2] or ''})"
+    )
+    await message.answer("📝 Введите причину назначения:")
+    await state.set_state(UserStates.waiting_for_admin_reason)
+
+@dp.message(UserStates.waiting_for_admin_reason)
+async def process_admin_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    new_admin_id = user_data['new_admin_id']
+    admin_info = user_data['new_admin_info']
+    reason = message.text
+    
+    # Отправляем пользователю предложение стать админом
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_admin_{new_admin_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_admin_{new_admin_id}")
+            ]
+        ]
+    )
+    
+    admin_agreement = (
+        "📜 СОГЛАШЕНИЕ АДМИНИСТРАТОРА\n\n"
+        "Принимая эту должность, вы соглашаетесь:\n"
+        "1. Проверять все доносы в течение 24 часов\n"
+        "2. Предоставлять отчеты о проверках\n"
+        "3. Соблюдать конфиденциальность информации\n"
+        "4. Быть онлайн минимум 4 часа в день\n\n"
+        "За нарушение правил - снятие с должности.\n"
+        "3 предупреждения = автоматическое снятие.\n\n"
+        f"📝 Причина назначения: {reason}\n\n"
+        "Вы согласны стать администратором?"
+    )
+    
+    try:
+        await bot.send_message(new_admin_id, admin_agreement, reply_markup=keyboard)
+        await message.answer(
+            f"✅ Предложение отправлено пользователю {admin_info}",
+            reply_markup=get_admin_keyboard()
+        )
+    except Exception as e:
+        await message.answer(
+            "❌ Не удалось отправить предложение пользователю.\n"
+            "Возможно, бот заблокирован."
+        )
+        logger.error(f"Error sending admin offer: {e}")
+        
+    await state.clear()
+
+@dp.callback_query(lambda c: c.data.startswith(("accept_admin_", "reject_admin_")))
+async def process_admin_response(callback: CallbackQuery):
+    action, user_id = callback.data.split("_")[0:2]
+    user_id = int(user_id)
+    
+    if action == "reject":
+        await callback.message.edit_text(
+            "❌ Вы отклонили предложение стать администратором."
+        )
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"❌ Пользователь {callback.from_user.id} отклонил предложение стать администратором."
+            )
+        except Exception as e:
+            logger.error(f"Error notifying owner about admin rejection: {e}")
+        return
+        
+    # Принятие предложения
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            INSERT INTO admins (
+                admin_id,
+                username,
+                first_name,
+                last_name,
+                approved_count,
+                rejected_count,
+                warnings,
+                registration_date
+            ) VALUES (?, ?, ?, ?, 0, 0, 0, CURRENT_TIMESTAMP)
+        ''', (
+            callback.from_user.id,
+            callback.from_user.username,
+            callback.from_user.first_name,
+            callback.from_user.last_name
+        ))
+        await db.commit()
+        
+    await callback.message.edit_text(
+        "✅ Поздравляем! Вы стали администратором бота.\n"
+        "Используйте /admin для доступа к панели администратора."
+    )
+    
+    try:
+        await bot.send_message(
+            OWNER_ID,
+            f"✅ Пользователь {callback.from_user.username or callback.from_user.id} принял предложение стать администратором."
+        )
+    except Exception as e:
+        logger.error(f"Error notifying owner about admin acceptance: {e}")
+
+@dp.message(F.text == "📊 Начисление рефералов")
+async def add_referrals_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для начисления рефералов:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_referral_user)
+
+@dp.message(UserStates.waiting_for_referral_user)
+async def process_referral_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    await state.update_data(target_user_id=user_id)
+    await message.answer("📊 Введите количество рефералов:")
+    await state.set_state(UserStates.waiting_for_referral_count)
 @dp.message(UserStates.waiting_for_referral_count)
 async def process_referral_count(message: Message, state: FSMContext):
     if message.text == "↩️ Отмена":
@@ -2373,7 +1801,7 @@ async def process_referral_reason(message: Message, state: FSMContext):
         reply_markup=get_admin_keyboard()
     )
     await state.clear()
-
+    
 @dp.message(F.text == "🎖 Выдать VIP")
 async def give_vip_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -2566,8 +1994,7 @@ async def process_remove_vip_reason(message: Message, state: FSMContext):
     )
     await state.clear()
     
-# === ПРОДОЛЖЕНИЕ ОБРАБОТЧИКОВ ПАНЕЛИ ВЛАДЕЛЬЦА ===
-
+    
 @dp.message(F.text == "💸 Оштрафовать")
 async def fine_user_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -2675,7 +2102,8 @@ async def process_fine_reason(message: Message, state: FSMContext):
         reply_markup=get_admin_keyboard()
     )
     await state.clear()
-
+    
+    
 @dp.message(F.text == "🗑 Удалить пользователя")
 async def delete_user_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -2786,9 +2214,392 @@ async def confirm_delete_user(message: Message, state: FSMContext):
     )
     await state.clear()
     
-    
-# === ОБРАБОТЧИКИ БАНА И РАЗБАНА ===
+@dp.message(F.text == "➕ Добавить информацию")
+async def add_info_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для добавления информации:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_info_user)
 
+@dp.message(UserStates.waiting_for_info_user)
+async def process_info_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    await state.update_data(target_user_id=user_id)
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👤 Имя"), KeyboardButton(text="👥 Фамилия")],
+            [KeyboardButton(text="👤 Отчество"), KeyboardButton(text="📅 Возраст")],
+            [KeyboardButton(text="📱 Номер"), KeyboardButton(text="🏠 Место жительства")],
+            [KeyboardButton(text="💼 Место работы"), KeyboardButton(text="🌐 Сети")],
+            [KeyboardButton(text="↩️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer("✍️ Выберите тип информации:", reply_markup=keyboard)
+    await state.set_state(UserStates.waiting_for_info_type)
+
+@dp.message(UserStates.waiting_for_info_type)
+async def process_info_type(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    info_types = {
+        "👤 Имя": "first_name",
+        "👥 Фамилия": "last_name",
+        "👤 Отчество": "middle_name",
+        "📅 Возраст": "birth_date",
+        "📱 Номер": "phone_number",
+        "🏠 Место жительства": "address",
+        "💼 Место работы": "workplace",
+        "🌐 Сети": "social_networks"
+    }
+    
+    if message.text not in info_types:
+        await message.answer("❌ Неверный тип информации. Используйте клавиатуру.")
+        return
+        
+    await state.update_data(info_type=info_types[message.text])
+    await message.answer(
+        "✍️ Введите информацию:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_info_value)
+
+@dp.message(UserStates.waiting_for_info_value)
+async def process_info_value(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    info_type = user_data['info_type']
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Проверяем существование записи
+        async with db.execute(
+            'SELECT 1 FROM info_base WHERE telegram_id = ?',
+            (target_id,)
+        ) as cursor:
+            exists = await cursor.fetchone()
+            
+        if exists:
+            await db.execute(f'''
+                UPDATE info_base 
+                SET {info_type} = ?,
+                    admin_approver_id = ?,
+                    info_date = CURRENT_TIMESTAMP
+                WHERE telegram_id = ?
+            ''', (message.text, message.from_user.id, target_id))
+        else:
+            fields = ['telegram_id', info_type, 'admin_approver_id']
+            values = [target_id, message.text, message.from_user.id]
+            await db.execute(f'''
+                INSERT INTO info_base ({', '.join(fields)})
+                VALUES ({', '.join(['?' for _ in fields])})
+            ''', values)
+            
+        await db.commit()
+        
+    await message.answer(
+        "✅ Информация успешно добавлена!",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "❌ Удалить информацию")
+async def delete_info_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для удаления информации:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_delete_info_user)
+    
+@dp.message(F.text == "➖ Снять админа")
+async def remove_admin_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID администратора для снятия:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_remove_admin)
+
+@dp.message(UserStates.waiting_for_remove_admin)
+async def process_remove_admin(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    admin_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT username, first_name, last_name FROM admins WHERE admin_id = ?',
+            (admin_id,)
+        ) as cursor:
+            admin = await cursor.fetchone()
+            
+        if not admin:
+            await message.answer("❌ Администратор не найден.")
+            await state.clear()
+            return
+            
+    await state.update_data(
+        remove_admin_id=admin_id,
+        admin_info=f"@{admin[0] or ''} ({admin[1] or ''} {admin[2] or ''})"
+    )
+    await message.answer("📝 Введите причину снятия с должности:")
+    await state.set_state(UserStates.waiting_for_remove_admin_reason)
+
+@dp.message(UserStates.waiting_for_remove_admin_reason)
+async def process_remove_admin_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    admin_id = user_data['remove_admin_id']
+    admin_info = user_data['admin_info']
+    reason = message.text
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Сохраняем лог о снятии админа
+        await db.execute('''
+            INSERT INTO admin_logs (
+                admin_id,
+                action_type,
+                action_details,
+                action_date
+            ) VALUES (?, 'removal', ?, CURRENT_TIMESTAMP)
+        ''', (admin_id, reason))
+        
+        # Удаляем админа
+        await db.execute('DELETE FROM admins WHERE admin_id = ?', (admin_id,))
+        await db.commit()
+        
+    try:
+        # Уведомляем админа о снятии
+        await bot.send_message(
+            admin_id,
+            f"❌ Вы были сняты с должности администратора.\n"
+            f"📝 Причина: {reason}"
+        )
+        # Очищаем историю чата
+        await bot.delete_chat_history(admin_id)
+    except Exception as e:
+        logger.error(f"Error notifying removed admin: {e}")
+        
+    await message.answer(
+        f"✅ Администратор {admin_info} снят с должности\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+    
+@dp.message(F.text == "👀 Кто донёс")
+async def who_reported_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для просмотра информации:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_info_search)
+
+@dp.message(UserStates.waiting_for_info_search)
+async def process_info_search(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    target_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Получаем всю информацию о пользователе с данными о тех, кто её предоставил
+        async with db.execute('''
+            SELECT 
+                i.first_name,
+                i.last_name,
+                i.middle_name,
+                i.birth_date,
+                i.phone_number,
+                i.address,
+                i.workplace,
+                i.social_networks,
+                i.info_provider_id,
+                i.admin_approver_id,
+                i.info_date,
+                u.username as provider_username,
+                u.first_name as provider_first_name,
+                a.username as admin_username,
+                a.first_name as admin_first_name
+            FROM info_base i
+            LEFT JOIN users u ON i.info_provider_id = u.user_id
+            LEFT JOIN admins a ON i.admin_approver_id = a.admin_id
+            WHERE i.telegram_id = ?
+        ''') as cursor:
+            info = await cursor.fetchone()
+            
+        if not info:
+            await message.answer("❌ Информация не найдена.")
+            return
+            
+        # Формируем сообщение
+        fields = {
+            "👤 Имя": info[0],
+            "👥 Фамилия": info[1],
+            "👤 Отчество": info[2],
+            "📅 Дата рождения": info[3],
+            "📱 Номер": info[4],
+            "🏠 Место жительства": info[5],
+            "💼 Место работы": info[6],
+            "🌐 Сети": info[7]
+        }
+        
+        result_text = f"📋 Информация о пользователе {target_id}:\n\n"
+        
+        for field_name, value in fields.items():
+            if value:
+                provider = f"@{info[11]}" if info[11] else f"{info[12]}"
+                admin = f"@{info[13]}" if info[13] else f"{info[14]}"
+                date = datetime.fromisoformat(info[10]).strftime("%d.%m.%Y %H:%M")
+                result_text += (
+                    f"{field_name}: {value}\n"
+                    f"├ Донёс: {provider} ({info[8]})\n"
+                    f"├ Одобрил: {admin} ({info[9]})\n"
+                    f"└ Дата: {date}\n\n"
+                )
+        
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="❌ Удалить информацию")],
+                [KeyboardButton(text="↩️ В меню")]
+            ],
+            resize_keyboard=True
+        )
+        
+        await message.answer(result_text, reply_markup=keyboard)
+        await state.update_data(target_id=target_id, available_fields=fields)
+        await state.set_state(UserStates.waiting_for_delete_info_type)
+
+@dp.message(UserStates.waiting_for_delete_info_type)
+async def process_delete_info_type(message: Message, state: FSMContext):
+    if message.text == "↩️ В меню":
+        await message.answer("↩️ Возвращаемся в меню", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if message.text != "❌ Удалить информацию":
+        await message.answer("❌ Неверная команда. Используйте клавиатуру.")
+        return
+        
+    user_data = await state.get_data()
+    fields = user_data['available_fields']
+    
+    # Создаем клавиатуру из доступных полей
+    keyboard = []
+    for field_name, value in fields.items():
+        if value:
+            keyboard.append([KeyboardButton(text=field_name)])
+    keyboard.append([KeyboardButton(text="↩️ Отмена")])
+    
+    await message.answer(
+        "✏️ Выберите поле для удаления:",
+        reply_markup=ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+    )
+    await state.set_state(UserStates.waiting_for_delete_field)
+
+@dp.message(UserStates.waiting_for_delete_field)
+async def process_delete_field(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_id']
+    fields = user_data['available_fields']
+    
+    if message.text not in fields:
+        await message.answer("❌ Неверное поле. Используйте клавиатуру.")
+        return
+        
+    # Мапинг названий полей в базе данных
+    field_mapping = {
+        "👤 Имя": "first_name",
+        "👥 Фамилия": "last_name",
+        "👤 Отчество": "middle_name",
+        "📅 Дата рождения": "birth_date",
+        "📱 Номер": "phone_number",
+        "🏠 Место жительства": "address",
+        "💼 Место работы": "workplace",
+        "🌐 Сети": "social_networks"
+    }
+    
+    field = field_mapping[message.text]
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute(f'''
+            UPDATE info_base 
+            SET {field} = NULL,
+                info_provider_id = NULL,
+                admin_approver_id = NULL
+            WHERE telegram_id = ?
+        ''', (target_id,))
+        await db.commit()
+        
+    await message.answer(
+        f"✅ Поле {message.text} успешно очищено!",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+    
 @dp.message(F.text == "🔒 Бан")
 async def ban_user_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -3077,6 +2888,7 @@ async def unban_user(user_id: int, reason: str):
         except Exception as e:
             logger.error(f"Error sending unban notification: {e}")
 
+            
 @dp.message(F.text == "🔓 Разбан")
 async def unban_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -3137,528 +2949,7 @@ async def process_unban_reason(message: Message, state: FSMContext):
     )
     await state.clear()
     
-# === ОБРАБОТЧИКИ УПРАВЛЕНИЯ ИНФОРМАЦИЕЙ И СТАТИСТИКОЙ ===
-
-@dp.message(F.text == "👀 Кто донёс")
-async def who_reported_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer(
-        "👤 Введите ID пользователя для просмотра информации:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-    await state.set_state(UserStates.waiting_for_info_search)
-
-@dp.message(UserStates.waiting_for_info_search)
-async def process_info_search(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    if not message.text.isdigit() or len(message.text) < 9:
-        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
-        return
-        
-    target_id = int(message.text)
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        # Получаем всю информацию о пользователе с данными о тех, кто её предоставил
-        async with db.execute('''
-            SELECT 
-                i.first_name,
-                i.last_name,
-                i.middle_name,
-                i.birth_date,
-                i.phone_number,
-                i.address,
-                i.workplace,
-                i.social_networks,
-                i.info_provider_id,
-                i.admin_approver_id,
-                i.info_date,
-                u.username as provider_username,
-                u.first_name as provider_first_name,
-                a.username as admin_username,
-                a.first_name as admin_first_name
-            FROM info_base i
-            LEFT JOIN users u ON i.info_provider_id = u.user_id
-            LEFT JOIN admins a ON i.admin_approver_id = a.admin_id
-            WHERE i.telegram_id = ?
-        ''') as cursor:
-            info = await cursor.fetchone()
-            
-        if not info:
-            await message.answer("❌ Информация не найдена.")
-            return
-            
-        # Формируем сообщение
-        fields = {
-            "👤 Имя": info[0],
-            "👥 Фамилия": info[1],
-            "👤 Отчество": info[2],
-            "📅 Дата рождения": info[3],
-            "📱 Номер": info[4],
-            "🏠 Место жительства": info[5],
-            "💼 Место работы": info[6],
-            "🌐 Сети": info[7]
-        }
-        
-        result_text = f"📋 Информация о пользователе {target_id}:\n\n"
-        
-        for field_name, value in fields.items():
-            if value:
-                provider = f"@{info[11]}" if info[11] else f"{info[12]}"
-                admin = f"@{info[13]}" if info[13] else f"{info[14]}"
-                date = datetime.fromisoformat(info[10]).strftime("%d.%m.%Y %H:%M")
-                result_text += (
-                    f"{field_name}: {value}\n"
-                    f"├ Донёс: {provider} ({info[8]})\n"
-                    f"├ Одобрил: {admin} ({info[9]})\n"
-                    f"└ Дата: {date}\n\n"
-                )
-        
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="❌ Удалить информацию")],
-                [KeyboardButton(text="↩️ В меню")]
-            ],
-            resize_keyboard=True
-        )
-        
-        await message.answer(result_text, reply_markup=keyboard)
-        await state.update_data(target_id=target_id, available_fields=fields)
-        await state.set_state(UserStates.waiting_for_delete_info_type)
-
-@dp.message(UserStates.waiting_for_delete_info_type)
-async def process_delete_info_type(message: Message, state: FSMContext):
-    if message.text == "↩️ В меню":
-        await message.answer("↩️ Возвращаемся в меню", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    if message.text != "❌ Удалить информацию":
-        await message.answer("❌ Неверная команда. Используйте клавиатуру.")
-        return
-        
-    user_data = await state.get_data()
-    fields = user_data['available_fields']
-    
-    # Создаем клавиатуру из доступных полей
-    keyboard = []
-    for field_name, value in fields.items():
-        if value:
-            keyboard.append([KeyboardButton(text=field_name)])
-    keyboard.append([KeyboardButton(text="↩️ Отмена")])
-    
-    await message.answer(
-        "✏️ Выберите поле для удаления:",
-        reply_markup=ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
-    )
-    await state.set_state(UserStates.waiting_for_delete_field)
-
-@dp.message(UserStates.waiting_for_delete_field)
-async def process_delete_field(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    user_data = await state.get_data()
-    target_id = user_data['target_id']
-    fields = user_data['available_fields']
-    
-    if message.text not in fields:
-        await message.answer("❌ Неверное поле. Используйте клавиатуру.")
-        return
-        
-    # Мапинг названий полей в базе данных
-    field_mapping = {
-        "👤 Имя": "first_name",
-        "👥 Фамилия": "last_name",
-        "👤 Отчество": "middle_name",
-        "📅 Дата рождения": "birth_date",
-        "📱 Номер": "phone_number",
-        "🏠 Место жительства": "address",
-        "💼 Место работы": "workplace",
-        "🌐 Сети": "social_networks"
-    }
-    
-    field = field_mapping[message.text]
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute(f'''
-            UPDATE info_base 
-            SET {field} = NULL,
-                info_provider_id = NULL,
-                admin_approver_id = NULL
-            WHERE telegram_id = ?
-        ''', (target_id,))
-        await db.commit()
-        
-    await message.answer(
-        f"✅ Поле {message.text} успешно очищено!",
-        reply_markup=get_admin_keyboard()
-    )
-    await state.clear()
-
-@dp.message(F.text == "📊 Статистика бота")
-async def show_bot_statistics(message: Message):
-    if not await is_owner(message.from_user.id):
-        return
-        
-    async with aiosqlite.connect('bot_database.db') as db:
-        # Общая статистика пользователей
-        async with db.execute('''
-            SELECT 
-                COUNT(*) as total_users,
-                SUM(CASE WHEN is_vip = 1 THEN 1 ELSE 0 END) as vip_users,
-                SUM(balance) as total_balance,
-                SUM(referrals_count) as total_referrals
-            FROM users
-        ''') as cursor:
-            users_stats = await cursor.fetchone()
-        
-        # Статистика админов
-        async with db.execute('''
-            SELECT 
-                COUNT(*) as total_admins,
-                SUM(approved_count) as total_approved,
-                SUM(rejected_count) as total_rejected
-            FROM admins
-        ''') as cursor:
-            admin_stats = await cursor.fetchone()
-            
-        # Статистика платежей
-        async with db.execute('''
-            SELECT 
-                COUNT(*) as total_transactions,
-                SUM(CASE WHEN payment_type = 'balance' THEN amount ELSE 0 END) as balance_payments,
-                SUM(CASE WHEN payment_type = 'vip' THEN amount ELSE 0 END) as vip_payments
-            FROM payments
-            WHERE payment_status = 'completed'
-        ''') as cursor:
-            payment_stats = await cursor.fetchone()
-            
-        # Статистика информационной базы
-        async with db.execute('''
-            SELECT 
-                COUNT(DISTINCT telegram_id) as total_entries,
-                COUNT(first_name) + COUNT(last_name) + COUNT(middle_name) +
-                COUNT(birth_date) + COUNT(phone_number) + COUNT(address) +
-                COUNT(workplace) + COUNT(social_networks) as total_fields
-            FROM info_base
-        ''') as cursor:
-            info_stats = await cursor.fetchone()
-            
-        # Статистика банов
-        async with db.execute('''
-            SELECT 
-                COUNT(*) as total_bans,
-                SUM(CASE WHEN ban_expiration IS NULL THEN 1 ELSE 0 END) as permanent_bans
-            FROM banned_users
-        ''') as cursor:
-            ban_stats = await cursor.fetchone()
-            
-        # Размер базы данных
-        db_size = os.path.getsize('bot_database.db') / (1024 * 1024)  # В МБ
-        
-        stats_text = (
-            "📊 СТАТИСТИКА БОТА\n\n"
-            f"👥 Пользователи:\n"
-            f"├ Всего: {users_stats[0]}\n"
-            f"├ VIP: {users_stats[1]}\n"
-            f"├ Общий баланс: {users_stats[2]:.2f} баллов\n"
-            f"└ Рефералов: {users_stats[3]}\n\n"
-            
-            f"👮 Администраторы:\n"
-            f"├ Всего: {admin_stats[0]}\n"
-            f"├ Одобрено: {admin_stats[1]}\n"
-            f"└ Отклонено: {admin_stats[2]}\n\n"
-            
-            f"💰 Платежи:\n"
-            f"├ Всего транзакций: {payment_stats[0]}\n"
-            f"├ За баллы: ${payment_stats[1]:.2f}\n"
-            f"└ За VIP: ${payment_stats[2]:.2f}\n\n"
-            
-            f"📁 Информационная база:\n"
-            f"├ Всего записей: {info_stats[0]}\n"
-            f"└ Всего полей: {info_stats[1]}\n\n"
-            
-            f"🚫 Баны:\n"
-            f"├ Всего: {ban_stats[0]}\n"
-            f"└ Вечных: {ban_stats[1]}\n\n"
-            
-            f"💾 Размер базы: {db_size:.2f} МБ\n"
-            f"📅 Дата запуска: {BOT_START_DATE}\n"
-            f"⏰ Аптайм: {(datetime.now() - datetime.fromisoformat(BOT_START_DATE)).days} дней"
-        )
-        
-        await message.answer(stats_text, reply_markup=get_admin_keyboard())
-
-# Добавляем необходимые состояния в класс UserStates
-class UserStates(StatesGroup):
-    # ... существующие состояния ...
-    waiting_for_info_search = State()
-    waiting_for_delete_info_type = State()
-    waiting_for_delete_field = State()
-    waiting_for_unban_user = State()
-    waiting_for_unban_reason = State()
-    
-# === ОБРАБОТЧИКИ УПРАВЛЕНИЯ АДМИНАМИ ===
-
-@dp.message(F.text == "➕ Добавить админа")
-async def add_admin_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer(
-        "👤 Введите ID нового администратора:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-    await state.set_state(UserStates.waiting_for_new_admin)
-
-@dp.message(UserStates.waiting_for_new_admin)
-async def process_new_admin(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    if not message.text.isdigit() or len(message.text) < 9:
-        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
-        return
-        
-    user_id = int(message.text)
-    
-    # Проверяем, не является ли пользователь уже админом
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute(
-            'SELECT 1 FROM admins WHERE admin_id = ?',
-            (user_id,)
-        ) as cursor:
-            if await cursor.fetchone():
-                await message.answer("❌ Этот пользователь уже является администратором.")
-                await state.clear()
-                return
-                
-        # Проверяем существование пользователя в базе
-        async with db.execute(
-            'SELECT username, first_name, last_name FROM users WHERE user_id = ?',
-            (user_id,)
-        ) as cursor:
-            user = await cursor.fetchone()
-            
-        if not user:
-            await message.answer("❌ Пользователь не найден в базе данных.")
-            await state.clear()
-            return
-            
-    await state.update_data(
-        new_admin_id=user_id,
-        new_admin_info=f"@{user[0] or ''} ({user[1] or ''} {user[2] or ''})"
-    )
-    await message.answer("📝 Введите причину назначения:")
-    await state.set_state(UserStates.waiting_for_admin_reason)
-
-@dp.message(UserStates.waiting_for_admin_reason)
-async def process_admin_reason(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    user_data = await state.get_data()
-    new_admin_id = user_data['new_admin_id']
-    admin_info = user_data['new_admin_info']
-    reason = message.text
-    
-    # Отправляем пользователю предложение стать админом
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_admin_{new_admin_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_admin_{new_admin_id}")
-            ]
-        ]
-    )
-    
-    admin_agreement = (
-        "📜 СОГЛАШЕНИЕ АДМИНИСТРАТОРА\n\n"
-        "Принимая эту должность, вы соглашаетесь:\n"
-        "1. Проверять все доносы в течение 24 часов\n"
-        "2. Предоставлять отчеты о проверках\n"
-        "3. Соблюдать конфиденциальность информации\n"
-        "4. Быть онлайн минимум 4 часа в день\n\n"
-        "За нарушение правил - снятие с должности.\n"
-        "3 предупреждения = автоматическое снятие.\n\n"
-        f"📝 Причина назначения: {reason}\n\n"
-        "Вы согласны стать администратором?"
-    )
-    
-    try:
-        await bot.send_message(new_admin_id, admin_agreement, reply_markup=keyboard)
-        await message.answer(
-            f"✅ Предложение отправлено пользователю {admin_info}",
-            reply_markup=get_admin_keyboard()
-        )
-    except Exception as e:
-        await message.answer(
-            "❌ Не удалось отправить предложение пользователю.\n"
-            "Возможно, бот заблокирован."
-        )
-        logger.error(f"Error sending admin offer: {e}")
-        
-    await state.clear()
-
-@dp.callback_query(lambda c: c.data.startswith(("accept_admin_", "reject_admin_")))
-async def process_admin_response(callback: CallbackQuery):
-    action, user_id = callback.data.split("_")[0:2]
-    user_id = int(user_id)
-    
-    if action == "reject":
-        await callback.message.edit_text(
-            "❌ Вы отклонили предложение стать администратором."
-        )
-        try:
-            await bot.send_message(
-                OWNER_ID,
-                f"❌ Пользователь {callback.from_user.id} отклонил предложение стать администратором."
-            )
-        except Exception as e:
-            logger.error(f"Error notifying owner about admin rejection: {e}")
-        return
-        
-    # Принятие предложения
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('''
-            INSERT INTO admins (
-                admin_id,
-                username,
-                first_name,
-                last_name,
-                approved_count,
-                rejected_count,
-                warnings,
-                registration_date
-            ) VALUES (?, ?, ?, ?, 0, 0, 0, CURRENT_TIMESTAMP)
-        ''', (
-            callback.from_user.id,
-            callback.from_user.username,
-            callback.from_user.first_name,
-            callback.from_user.last_name
-        ))
-        await db.commit()
-        
-    await callback.message.edit_text(
-        "✅ Поздравляем! Вы стали администратором бота.\n"
-        "Используйте /admin для доступа к панели администратора."
-    )
-    
-    try:
-        await bot.send_message(
-            OWNER_ID,
-            f"✅ Пользователь {callback.from_user.username or callback.from_user.id} принял предложение стать администратором."
-        )
-    except Exception as e:
-        logger.error(f"Error notifying owner about admin acceptance: {e}")
-
-@dp.message(F.text == "➖ Снять админа")
-async def remove_admin_start(message: Message, state: FSMContext):
-    if not await is_owner(message.from_user.id):
-        return
-    await message.answer(
-        "👤 Введите ID администратора для снятия:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-    await state.set_state(UserStates.waiting_for_remove_admin)
-
-@dp.message(UserStates.waiting_for_remove_admin)
-async def process_remove_admin(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    if not message.text.isdigit() or len(message.text) < 9:
-        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
-        return
-        
-    admin_id = int(message.text)
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute(
-            'SELECT username, first_name, last_name FROM admins WHERE admin_id = ?',
-            (admin_id,)
-        ) as cursor:
-            admin = await cursor.fetchone()
-            
-        if not admin:
-            await message.answer("❌ Администратор не найден.")
-            await state.clear()
-            return
-            
-    await state.update_data(
-        remove_admin_id=admin_id,
-        admin_info=f"@{admin[0] or ''} ({admin[1] or ''} {admin[2] or ''})"
-    )
-    await message.answer("📝 Введите причину снятия с должности:")
-    await state.set_state(UserStates.waiting_for_remove_admin_reason)
-
-@dp.message(UserStates.waiting_for_remove_admin_reason)
-async def process_remove_admin_reason(message: Message, state: FSMContext):
-    if message.text == "↩️ Отмена":
-        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
-        await state.clear()
-        return
-        
-    user_data = await state.get_data()
-    admin_id = user_data['remove_admin_id']
-    admin_info = user_data['admin_info']
-    reason = message.text
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        # Сохраняем лог о снятии админа
-        await db.execute('''
-            INSERT INTO admin_logs (
-                admin_id,
-                action_type,
-                action_details,
-                action_date
-            ) VALUES (?, 'removal', ?, CURRENT_TIMESTAMP)
-        ''', (admin_id, reason))
-        
-        # Удаляем админа
-        await db.execute('DELETE FROM admins WHERE admin_id = ?', (admin_id,))
-        await db.commit()
-        
-    try:
-        # Уведомляем админа о снятии
-        await bot.send_message(
-            admin_id,
-            f"❌ Вы были сняты с должности администратора.\n"
-            f"📝 Причина: {reason}"
-        )
-        # Очищаем историю чата
-        await bot.delete_chat_history(admin_id)
-    except Exception as e:
-        logger.error(f"Error notifying removed admin: {e}")
-        
-    await message.answer(
-        f"✅ Администратор {admin_info} снят с должности\n"
-        f"📝 Причина: {reason}",
-        reply_markup=get_admin_keyboard()
-    )
-    await state.clear()
-
+                            
 @dp.message(F.text == "⚠️ Выдать варн")
 async def warn_admin_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -3728,9 +3019,6 @@ async def process_warn_reason(message: Message, state: FSMContext):
             WHERE admin_id = ?
         ''', (new_warnings, admin_id))
         
-        # Сохраняем лог предупреждения
-        await db.execute('''
-            INSERT INTO admin_logs (
             
 @dp.message(UserStates.waiting_for_warn_reason)
 async def process_warn_reason(message: Message, state: FSMContext):
@@ -3817,7 +3105,9 @@ async def process_warn_reason(message: Message, state: FSMContext):
             )
     
     await state.clear()
-
+    
+        
+            
 @dp.message(F.text == "📈 Недельная статистика")
 async def show_weekly_stats(message: Message):
     if not await is_owner(message.from_user.id):
@@ -3914,13 +3204,401 @@ async def show_weekly_stats(message: Message):
         )
         
         await message.answer(stats_text, reply_markup=get_admin_keyboard())
+        
+            
+                
+                        
+@dp.message(F.text == "🔎 Просмотр информации")
+async def view_info_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    
+    await message.answer(
+        "🔍 Введите ID пользователя или имя для поиска:"
+    )
+    await state.set_state("waiting_for_info_search")
 
-# Добавляем новые состояния в класс UserStates
-class UserStates(StatesGroup):
-    # ... существующие состояния ...
-    waiting_for_warn_admin = State()
-    waiting_for_warn_reason = State()
-    waiting_for_new_admin = State()
-    waiting_for_admin_reason = State()
-    waiting_for_remove_admin = State()
-    waiting_for_remove_admin_reason = State()
+@dp.message(lambda message: message.from_user.id == OWNER_ID and message.state == "waiting_for_info_search")
+async def process_info_search(message: Message, state: FSMContext):
+    search_query = message.text.strip()
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        if search_query.isdigit():
+            # Search by ID
+            async with db.execute('''
+                SELECT * FROM users 
+                WHERE user_id = ?
+            ''', (int(search_query),)) as cursor:
+                user = await cursor.fetchone()
+                users = [user] if user else []
+        else:
+            # Search by name
+            async with db.execute('''
+                SELECT * FROM users 
+                WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?
+            ''', (f"%{search_query}%", f"%{search_query}%", f"%{search_query}%")) as cursor:
+                users = await cursor.fetchall()
+        
+        if not users:
+            await message.answer("❌ Пользователь не найден.")
+            await state.clear()
+            return
+        
+        if len(users) > 1:
+            # Multiple matches
+            text = "📋 Найдено несколько совпадений:\n\n"
+            for user in users:
+                text += f"👤 {user[2]} {user[3]} - ID: {user[0]}\n"
+            text += "\nВведите ID нужного пользователя:"
+            
+            await message.answer(text)
+            await state.set_state("waiting_for_user_selection")
+            await state.update_data(users=users)
+            return
+        
+        # Single user found - show detailed info
+        await show_user_details(message, users[0][0])
+        await state.clear()
+
+async def show_user_details(message: Message, user_id: int):
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Get user info
+        async with db.execute('''
+            SELECT * FROM users WHERE user_id = ?
+        ''', (user_id,)) as cursor:
+            user = await cursor.fetchone()
+        
+        if not user:
+            await message.answer("❌ Пользователь не найден.")
+            return
+        
+        # Get referrals info
+        async with db.execute('''
+            SELECT COUNT(*) FROM referrals WHERE user_id = ?
+        ''', (user_id,)) as cursor:
+            referrals_count = (await cursor.fetchone())[0]
+        
+        # Get payments info
+        async with db.execute('''
+            SELECT 
+                COUNT(*),
+                SUM(CASE WHEN payment_status = 'completed' THEN amount ELSE 0 END)
+            FROM payments 
+            WHERE user_id = ?
+        ''', (user_id,)) as cursor:
+            payments_count, total_payments = await cursor.fetchone()
+        
+        # Get reports info
+        async with db.execute('''
+            SELECT COUNT(*) FROM reports WHERE user_id = ?
+        ''', (user_id,)) as cursor:
+            reports_count = (await cursor.fetchone())[0]
+        
+        reg_date = datetime.fromisoformat(user[11]).strftime("%d.%m.%Y %H:%M")
+        vip_status = "Активен" if user[6] else "Неактивен"
+        if user[6] and user[7]:
+            vip_expiry = datetime.fromisoformat(user[7])
+            if vip_expiry > datetime.now(timezone.utc):
+                vip_status += f" (до {vip_expiry.strftime('%d.%m.%Y')})"
+        
+        text = (
+            f"👤 Информация о пользователе\n\n"
+            f"🆔 ID: {user[0]}\n"
+            f"👤 Имя: {user[2]}\n"
+            f"👥 Фамилия: {user[3]}\n"
+            f"📝 Username: @{user[1]}\n"
+            f"📅 Регистрация: {reg_date}\n\n"
+            f"💰 Баланс: {user[5]} баллов\n"
+            f"👑 VIP статус: {vip_status}\n"
+            f"🔑 Реферальный код: {user[4]}\n"
+            f"👥 Рефералов привлечено: {referrals_count}\n\n"
+            f"📊 Статистика:\n"
+            f"💵 Всего платежей: {payments_count}\n"
+            f"💰 Сумма платежей: ${total_payments:.2f}\n"
+            f"📝 Отправлено доносов: {reports_count}\n"
+            f"⚠️ Предупреждений: {user[14]}\n"
+        )
+        
+        await message.answer(text)
+# Automatic systems and bot startup
+async def check_admin_deadlines():
+    """Check admin report deadlines and VIP expiration"""
+    while True:
+        try:
+            async with aiosqlite.connect('bot_database.db') as db:
+                # Check report deadlines
+                async with db.execute('''
+                    SELECT 
+                        admin_id,
+                        target_user_id,
+                        check_start_time
+                    FROM reports 
+                    WHERE status = 'checking'
+                ''') as cursor:
+                    checking_reports = await cursor.fetchall()
+                
+                current_time = datetime.now(timezone.utc)
+                for admin_id, target_id, start_time in checking_reports:
+                    start_time = datetime.fromisoformat(start_time)
+                    if current_time - start_time > timedelta(hours=23, minutes=50):
+                        # Send warning to admin
+                        await bot.send_message(
+                            admin_id,
+                            "⚠️ До окончания проверки осталось 10 минут!"
+                        )
+                    elif current_time - start_time > timedelta(hours=24):
+                        # Add warning and possibly remove admin
+                        await db.execute('''
+                            UPDATE admins 
+                            SET warnings = warnings + 3
+                            WHERE admin_id = ?
+                        ''', (admin_id,))
+                        
+                        async with db.execute(
+                            'SELECT warnings FROM admins WHERE admin_id = ?',
+                            (admin_id,)
+                        ) as cursor:
+                            warnings = (await cursor.fetchone())[0]
+                        
+                        if warnings >= 3:
+                            await remove_admin(
+                                admin_id,
+                                "Превышение времени проверки доноса"
+                            )
+                
+                # Check VIP expiration
+                async with db.execute('''
+                    SELECT user_id, vip_expiration
+                    FROM users 
+                    WHERE is_vip = TRUE AND vip_expiration IS NOT NULL
+                ''') as cursor:
+                    vip_users = await cursor.fetchall()
+                
+                for user_id, expiration in vip_users:
+                    expiry = datetime.fromisoformat(expiration)
+                    if current_time > expiry:
+                        await db.execute('''
+                            UPDATE users 
+                            SET is_vip = FALSE,
+                                vip_expiration = NULL
+                            WHERE user_id = ?
+                        ''', (user_id,))
+                        
+                        await bot.send_message(
+                            user_id,
+                            "ℹ️ Ваш VIP статус истек."
+                        )
+                
+                await db.commit()
+                
+        except Exception as e:
+            logger.error(f"Error in admin deadline checker: {e}")
+        
+        await asyncio.sleep(60)  # Check every minute
+
+async def clean_old_data():
+    """Clean old data and maintain database"""
+    while True:
+        try:
+            async with aiosqlite.connect('bot_database.db') as db:
+                current_time = datetime.now(timezone.utc)
+                
+                # Clean old pending reports
+                await db.execute('''
+                    DELETE FROM reports 
+                    WHERE status = 'pending' 
+                    AND report_date < ?
+                ''', (current_time - timedelta(days=7),))
+                
+                # Clean old completed payments
+                await db.execute('''
+                    DELETE FROM payments 
+                    WHERE payment_status = 'completed' 
+                    AND payment_date < ?
+                ''', (current_time - timedelta(days=30),))
+                
+                # Clean old action logs
+                await db.execute('''
+                    DELETE FROM action_logs 
+                    WHERE action_date < ?
+                ''', (current_time - timedelta(days=90),))
+                
+                await db.commit()
+                
+                # Vacuum database to reclaim space
+                await db.execute('VACUUM')
+                
+        except Exception as e:
+            logger.error(f"Error in database cleaner: {e}")
+        
+        await asyncio.sleep(86400)  # Run once per day
+
+async def update_statistics():
+    """Update bot statistics"""
+    while True:
+        try:
+            async with aiosqlite.connect('bot_database.db') as db:
+                async with db.execute('''
+                    SELECT 
+                        COUNT(*) as total_users,
+                        SUM(CASE WHEN is_vip = 1 THEN 1 ELSE 0 END) as vip_users,
+                        SUM(referrals_count) as total_referrals
+                    FROM users
+                ''') as cursor:
+                    users_stats = await cursor.fetchone()
+                
+                async with db.execute('''
+                    SELECT COUNT(*) FROM admins
+                ''') as cursor:
+                    admin_count = (await cursor.fetchone())[0]
+                
+                async with db.execute('''
+                    SELECT SUM(amount) 
+                    FROM payments 
+                    WHERE payment_status = 'completed'
+                ''') as cursor:
+                    total_payments = (await cursor.fetchone())[0] or 0
+                
+                await db.execute('''
+                    INSERT INTO statistics (
+                        total_users,
+                        total_admins,
+                        total_payments,
+                        total_referrals,
+                        stat_date
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    users_stats[0],
+                    admin_count,
+                    total_payments,
+                    users_stats[2]
+                ))
+                
+                await db.commit()
+                
+        except Exception as e:
+            logger.error(f"Error in statistics updater: {e}")
+        
+        await asyncio.sleep(3600)  # Update every hour
+
+# Security measures
+def setup_security():
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('bot.log'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Set up API request limits
+    dp.message.middleware(ThrottlingMiddleware(rate_limit=1))
+    
+    # Enable error handling
+    dp.errors.register(error_handler)
+
+async def error_handler(event, error):
+    """Handle errors in the bot"""
+    try:
+        error_msg = f"Error: {error}\nEvent: {event}"
+        logger.error(error_msg)
+
+        if isinstance(error, SQLInjectionError):
+            user_id = getattr(event, 'from_user', None)
+            if user_id:
+                async with aiosqlite.connect('bot_database.db') as db:
+                    await db.execute('''
+                        UPDATE users 
+                        SET warnings = warnings + 1
+                        WHERE user_id = ?
+                    ''', (user_id.id,))
+
+                    async with db.execute(
+                        'SELECT warnings FROM users WHERE user_id = ?', 
+                        (user_id.id,)
+                    ) as cursor:
+                        warnings = (await cursor.fetchone())[0]
+                        if warnings >= 3:
+                            await ban_user(user_id.id, "Попытка SQL-инъекции", 0)
+
+                    await db.commit()
+
+                await bot.send_message(
+                    OWNER_ID,
+                    f"⚠️ Попытка SQL-инъекции!\n"
+                    f"Пользователь: {user_id.id if user_id else 'Unknown'}"
+                )
+        
+    except Exception as e:
+        logger.error(f"Error in error handler: {e}")
+
+class SQLInjectionError(Exception):
+    pass
+
+def check_sql_injection(text: str) -> bool:
+    """Check for SQL injection attempts"""
+    suspicious_patterns = [
+        r'\bSELECT\b',
+        r'\bINSERT\b',
+        r'\bUPDATE\b',
+        r'\bDELETE\b',
+        r'\bDROP\b',
+        r'\bUNION\b',
+        r'--',
+        r';',
+        r'\/\*',
+        r'\*\/',
+        r'\bOR\b.*\b=\b',
+        r'\bAND\b.*\b=\b'
+    ]
+    
+    for pattern in suspicious_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            raise SQLInjectionError("Подозрительный ввод")
+    
+    return False
+
+# Bot startup
+async def on_startup():
+    """Setup bot on startup"""
+    setup_security()
+    
+    # Initialize database
+    await init_db()
+    
+    # Start background tasks
+    asyncio.create_task(check_payments())
+    asyncio.create_task(check_admin_deadlines())
+    asyncio.create_task(clean_old_data())
+    asyncio.create_task(update_statistics())
+    
+    logger.info("Bot started successfully!")
+
+async def main():
+    """Main function to start the bot"""
+    # Удаляем вебхук перед запуском
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Set bot commands
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="help", description="Помощь"),
+        BotCommand(command="profile", description="Профиль")
+    ])
+    
+    # Register startup handler
+    dp.startup.register(on_startup)
+    
+    # Start bot
+    try:
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        await bot.session.close()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped!")
