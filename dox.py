@@ -1,3 +1,4 @@
+from aiogram.types import ErrorEvent
 import asyncio
 import logging
 import json
@@ -26,6 +27,9 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiocryptopay import AioCryptoPay, Networks
 import aiosqlite
 import os
+import traceback
+import string
+import random
 
 # Middleware for request throttling
 class ThrottlingMiddleware(BaseMiddleware):
@@ -320,10 +324,17 @@ async def check_subscription(user_id: int) -> bool:
         return False
 
 async def generate_unique_referral_code() -> str:
+    """Generate unique referral code"""
     while True:
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        # Используем импортированные random и string
+        chars = string.ascii_uppercase + string.digits
+        code = ''.join(random.choices(chars, k=8))
+        
         async with aiosqlite.connect('bot_database.db') as db:
-            async with db.execute('SELECT 1 FROM users WHERE referral_code = ?', (code,)) as cursor:
+            async with db.execute(
+                'SELECT 1 FROM users WHERE referral_code = ?', 
+                (code,)
+            ) as cursor:
                 if not await cursor.fetchone():
                     return code
 
@@ -397,18 +408,27 @@ async def cmd_start(message: Message, state: FSMContext):
             )
 
 async def register_user(user: types.User, is_owner: bool = False):
-    async with aiosqlite.connect('bot_database.db') as db:
-        referral_code = await generate_unique_referral_code()
-        await db.execute('''
-            INSERT INTO users (
-                user_id, username, first_name, last_name,
-                referral_code, is_vip, registration_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user.id, user.username, user.first_name, user.last_name,
-            referral_code, is_owner, datetime.now(timezone.utc)
-        ))
-        await db.commit()
+    """Register new user in the database"""
+    try:
+        async with aiosqlite.connect('bot_database.db') as db:
+            referral_code = await generate_unique_referral_code()
+            current_time = datetime.now(timezone.utc)
+            
+            await db.execute('''
+                INSERT INTO users (
+                    user_id, username, first_name, last_name,
+                    referral_code, is_vip, registration_date, 
+                    agreement_accepted
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user.id, user.username, user.first_name, user.last_name,
+                referral_code, is_owner, current_time, True
+            ))
+            await db.commit()
+            
+    except Exception as e:
+        logger.error(f"Error registering user: {e}\n{traceback.format_exc()}")
+        raise
 
 @dp.callback_query(F.data == "check_subscription")
 async def callback_check_subscription(callback: CallbackQuery, state: FSMContext):
@@ -444,6 +464,14 @@ async def callback_accept_agreement(callback: CallbackQuery, state: FSMContext):
                 reply_markup=get_main_menu_keyboard()
             )
             return
+        
+        # Update agreement_accepted status
+        await db.execute('''
+            UPDATE users 
+            SET agreement_accepted = TRUE 
+            WHERE user_id = ?
+        ''', (user_id,))
+        await db.commit()
         
         await callback.message.edit_text(
             "🔑 Пожалуйста, введите код приглашения:",
@@ -1873,7 +1901,6 @@ async def update_statistics():
         
         await asyncio.sleep(3600)  # Update every hour
 
-# Security measures
 def setup_security():
     # Configure logging
     logging.basicConfig(
@@ -1888,17 +1915,20 @@ def setup_security():
     # Set up API request limits
     dp.message.middleware(ThrottlingMiddleware(rate_limit=1))
     
-    # Enable error handling
-    dp.errors.register(error_handler)
-
-async def error_handler(event, error):
+@dp.errors()
+async def error_handler(event: ErrorEvent):
     """Handle errors in the bot"""
     try:
-        error_msg = f"Error: {error}\nEvent: {event}"
+        error_msg = (
+            f"Error: {event.exception}\n"
+            f"Update type: {type(event.update)}\n"
+            f"Update content: {event.update}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
         logger.error(error_msg)
         
-        if isinstance(error, SQLInjectionError):
-            user_id = getattr(event, 'from_user', None)
+        if isinstance(event.exception, SQLInjectionError):
+            user_id = getattr(event.update, 'from_user', None)
             if user_id:
                 async with aiosqlite.connect('bot_database.db') as db:
                     await db.execute('''
@@ -1925,8 +1955,8 @@ async def error_handler(event, error):
             )
         
     except Exception as e:
-        logger.error(f"Error in error handler: {e}")
-
+        logger.error(f"Critical error in error handler: {e}\n{traceback.format_exc()}")
+        
 class SQLInjectionError(Exception):
     pass
 
