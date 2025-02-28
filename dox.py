@@ -2084,3 +2084,1843 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped!")
+
+# === ДОБАВЛЕННЫЕ ЧАСТИ ИЗ up.py ===
+
+# === ОБНОВЛЕННЫЕ СОСТОЯНИЯ ДЛЯ КЛАССА UserStates ===
+waiting_for_info_user = State()          # Для добавления информации
+waiting_for_info_type = State()          # Тип добавляемой информации
+waiting_for_info_value = State()         # Значение добавляемой информации
+waiting_for_delete_info_user = State()   # Для удаления информации
+waiting_for_delete_info_type = State()   # Выбор типа информации для удаления
+waiting_for_referral_user = State()      # ID пользователя для начисления рефералов
+waiting_for_referral_count = State()     # Количество начисляемых рефералов
+waiting_for_referral_reason = State()    # Причина начисления рефералов
+waiting_for_vip_user = State()           # ID для выдачи VIP
+waiting_for_vip_duration = State()       # Длительность VIP статуса
+waiting_for_vip_reason = State()         # Причина выдачи VIP
+waiting_for_remove_vip_user = State()    # ID для снятия VIP
+waiting_for_remove_vip_reason = State()  # Причина снятия VIP
+waiting_for_fine_user = State()          # ID для штрафа
+waiting_for_fine_amount = State()        # Сумма штрафа
+waiting_for_fine_reason = State()        # Причина штрафа
+waiting_for_delete_user = State()        # ID для удаления пользователя
+waiting_for_delete_confirm = State()     # Подтверждение удаления
+
+# === ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ КНОПОК ПАНЕЛИ ВЛАДЕЛЬЦА ===
+
+@dp.message(F.text == "➕ Добавить информацию")
+async def add_info_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для добавления информации:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_info_user)
+
+@dp.message(UserStates.waiting_for_info_user)
+async def process_info_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    await state.update_data(target_user_id=user_id)
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👤 Имя"), KeyboardButton(text="👥 Фамилия")],
+            [KeyboardButton(text="👤 Отчество"), KeyboardButton(text="📅 Возраст")],
+            [KeyboardButton(text="📱 Номер"), KeyboardButton(text="🏠 Место жительства")],
+            [KeyboardButton(text="💼 Место работы"), KeyboardButton(text="🌐 Сети")],
+            [KeyboardButton(text="↩️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer("✍️ Выберите тип информации:", reply_markup=keyboard)
+    await state.set_state(UserStates.waiting_for_info_type)
+
+@dp.message(UserStates.waiting_for_info_type)
+async def process_info_type(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    info_types = {
+        "👤 Имя": "first_name",
+        "👥 Фамилия": "last_name",
+        "👤 Отчество": "middle_name",
+        "📅 Возраст": "birth_date",
+        "📱 Номер": "phone_number",
+        "🏠 Место жительства": "address",
+        "💼 Место работы": "workplace",
+        "🌐 Сети": "social_networks"
+    }
+    
+    if message.text not in info_types:
+        await message.answer("❌ Неверный тип информации. Используйте клавиатуру.")
+        return
+        
+    await state.update_data(info_type=info_types[message.text])
+    await message.answer(
+        "✍️ Введите информацию:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_info_value)
+
+@dp.message(UserStates.waiting_for_info_value)
+async def process_info_value(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    info_type = user_data['info_type']
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Проверяем существование записи
+        async with db.execute(
+            'SELECT 1 FROM info_base WHERE telegram_id = ?',
+            (target_id,)
+        ) as cursor:
+            exists = await cursor.fetchone()
+            
+        if exists:
+            await db.execute(f'''
+                UPDATE info_base 
+                SET {info_type} = ?,
+                    admin_approver_id = ?,
+                    info_date = CURRENT_TIMESTAMP
+                WHERE telegram_id = ?
+            ''', (message.text, message.from_user.id, target_id))
+        else:
+            fields = ['telegram_id', info_type, 'admin_approver_id']
+            values = [target_id, message.text, message.from_user.id]
+            await db.execute(f'''
+                INSERT INTO info_base ({', '.join(fields)})
+                VALUES ({', '.join(['?' for _ in fields])})
+            ''', values)
+            
+        await db.commit()
+        
+    await message.answer(
+        "✅ Информация успешно добавлена!",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "❌ Удалить информацию")
+async def delete_info_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для удаления информации:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_delete_info_user)
+
+@dp.message(F.text == "📊 Начисление рефералов")
+async def add_referrals_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для начисления рефералов:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_referral_user)
+
+@dp.message(UserStates.waiting_for_referral_user)
+async def process_referral_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    await state.update_data(target_user_id=user_id)
+    await message.answer("📊 Введите количество рефералов:")
+    await state.set_state(UserStates.waiting_for_referral_count)
+
+# === ПРОДОЛЖЕНИЕ ОБРАБОТЧИКОВ ПАНЕЛИ ВЛАДЕЛЬЦА ===
+
+@dp.message(F.text == "👥 Статистика админов")
+async def show_admin_statistics(message: Message):
+    if not await is_owner(message.from_user.id):
+        return
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute('''
+            SELECT 
+                username,
+                first_name,
+                last_name,
+                approved_count,
+                rejected_count,
+                warnings,
+                registration_date,
+                (approved_count + rejected_count) as total_reports
+            FROM admins
+            ORDER BY total_reports DESC
+        ''') as cursor:
+            admins = await cursor.fetchall()
+            
+        if not admins:
+            await message.answer(
+                "ℹ️ Нет активных администраторов.",
+                reply_markup=get_admin_keyboard()
+            )
+            return
+            
+        stats_text = "👥 Статистика администраторов:\n\n"
+        
+        for i, admin in enumerate(admins, 1):
+            username, first_name, last_name, approved, rejected, warnings, reg_date, total = admin
+            reg_date = datetime.fromisoformat(reg_date).strftime("%d.%m.%Y")
+            
+            stats_text += (
+                f"{i}. {first_name} {last_name} (@{username})\n"
+                f"✅ Одобрено: {approved}\n"
+                f"❌ Отклонено: {rejected}\n"
+                f"⚠️ Предупреждения: {warnings}/3\n"
+                f"📅 На посту с: {reg_date}\n"
+                f"📊 Рейтинг эффективности: {(approved/(total or 1))*100:.1f}%\n\n"
+            )
+        
+        await message.answer(stats_text, reply_markup=get_admin_keyboard())
+        
+# === ПРОДОЛЖЕНИЕ ОБРАБОТЧИКОВ ПАНЕЛИ ВЛАДЕЛЬЦА ===
+
+@dp.message(UserStates.waiting_for_referral_count)
+async def process_referral_count(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    try:
+        count = int(message.text)
+        if count <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите положительное целое число.")
+        return
+        
+    await state.update_data(referral_count=count)
+    await message.answer("📝 Введите причину начисления:")
+    await state.set_state(UserStates.waiting_for_referral_reason)
+
+@dp.message(UserStates.waiting_for_referral_reason)
+async def process_referral_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    count = user_data['referral_count']
+    reason = message.text
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE users 
+            SET referrals_count = referrals_count + ?,
+                balance = balance + ?
+            WHERE user_id = ?
+        ''', (count, count * REFERRAL_REWARD, target_id))
+        await db.commit()
+        
+        try:
+            await bot.send_message(
+                target_id,
+                f"📊 Вам начислено {count} рефералов\n"
+                f"💰 Баланс пополнен на {count * REFERRAL_REWARD} баллов\n"
+                f"📝 Причина: {reason}"
+            )
+        except Exception as e:
+            logger.error(f"Error sending referral notification: {e}")
+    
+    await message.answer(
+        f"✅ Успешно начислено {count} рефералов\n"
+        f"👤 Пользователю: {target_id}\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "🎖 Выдать VIP")
+async def give_vip_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_vip_user)
+
+@dp.message(UserStates.waiting_for_vip_user)
+async def process_vip_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    await state.update_data(target_user_id=user_id)
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="7 дней"), KeyboardButton(text="30 дней")],
+            [KeyboardButton(text="365 дней"), KeyboardButton(text="Навсегда")],
+            [KeyboardButton(text="↩️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer(
+        "⏰ Выберите длительность VIP статуса:",
+        reply_markup=keyboard
+    )
+    await state.set_state(UserStates.waiting_for_vip_duration)
+
+@dp.message(UserStates.waiting_for_vip_duration)
+async def process_vip_duration(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    duration_map = {
+        "7 дней": 7,
+        "30 дней": 30,
+        "365 дней": 365,
+        "Навсегда": 0
+    }
+    
+    if message.text not in duration_map:
+        await message.answer("❌ Неверная длительность. Используйте клавиатуру.")
+        return
+        
+    duration = duration_map[message.text]
+    await state.update_data(vip_duration=duration)
+    await message.answer("📝 Введите причину выдачи VIP статуса:")
+    await state.set_state(UserStates.waiting_for_vip_reason)
+
+@dp.message(UserStates.waiting_for_vip_reason)
+async def process_vip_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    duration = user_data['vip_duration']
+    reason = message.text
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        if duration == 0:
+            expiration = None
+        else:
+            expiration = datetime.now(timezone.utc) + timedelta(days=duration)
+            
+        await db.execute('''
+            UPDATE users 
+            SET is_vip = TRUE,
+                vip_expiration = ?
+            WHERE user_id = ?
+        ''', (expiration, target_id))
+        await db.commit()
+        
+        duration_text = "навсегда" if duration == 0 else f"на {duration} дней"
+        
+        try:
+            await bot.send_message(
+                target_id,
+                f"👑 Вам выдан VIP статус {duration_text}!\n"
+                f"📝 Причина: {reason}"
+            )
+        except Exception as e:
+            logger.error(f"Error sending VIP notification: {e}")
+    
+    await message.answer(
+        f"✅ VIP статус выдан {duration_text}\n"
+        f"👤 Пользователю: {target_id}\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "🚫 Снять VIP")
+async def remove_vip_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_remove_vip_user)
+
+@dp.message(UserStates.waiting_for_remove_vip_user)
+async def process_remove_vip_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT is_vip FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            result = await cursor.fetchone()
+            
+        if not result or not result[0]:
+            await message.answer(
+                "❌ У пользователя нет VIP статуса.",
+                reply_markup=get_admin_keyboard()
+            )
+            await state.clear()
+            return
+            
+    await state.update_data(target_user_id=user_id)
+    await message.answer("📝 Введите причину снятия VIP статуса:")
+    await state.set_state(UserStates.waiting_for_remove_vip_reason)
+
+@dp.message(UserStates.waiting_for_remove_vip_reason)
+async def process_remove_vip_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    reason = message.text
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE users 
+            SET is_vip = FALSE,
+                vip_expiration = NULL
+            WHERE user_id = ?
+        ''', (target_id,))
+        await db.commit()
+        
+        try:
+            await bot.send_message(
+                target_id,
+                f"❌ Ваш VIP статус снят!\n"
+                f"📝 Причина: {reason}"
+            )
+        except Exception as e:
+            logger.error(f"Error sending VIP removal notification: {e}")
+    
+    await message.answer(
+        f"✅ VIP статус снят\n"
+        f"👤 У пользователя: {target_id}\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+    
+# === ПРОДОЛЖЕНИЕ ОБРАБОТЧИКОВ ПАНЕЛИ ВЛАДЕЛЬЦА ===
+
+@dp.message(F.text == "💸 Оштрафовать")
+async def fine_user_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для штрафа:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_fine_user)
+
+@dp.message(UserStates.waiting_for_fine_user)
+async def process_fine_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT balance FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            result = await cursor.fetchone()
+            
+        if not result:
+            await message.answer("❌ Пользователь не найден.")
+            return
+            
+    await state.update_data(target_user_id=user_id, current_balance=result[0])
+    await message.answer("💰 Введите сумму штрафа:")
+    await state.set_state(UserStates.waiting_for_fine_amount)
+
+@dp.message(UserStates.waiting_for_fine_amount)
+async def process_fine_amount(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    try:
+        amount = float(message.text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите положительное число.")
+        return
+        
+    user_data = await state.get_data()
+    current_balance = user_data['current_balance']
+    
+    await state.update_data(fine_amount=min(amount, current_balance))
+    await message.answer("📝 Введите причину штрафа:")
+    await state.set_state(UserStates.waiting_for_fine_reason)
+
+@dp.message(UserStates.waiting_for_fine_reason)
+async def process_fine_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    amount = user_data['fine_amount']
+    current_balance = user_data['current_balance']
+    reason = message.text
+    
+    # Если штраф больше баланса, обнуляем баланс
+    new_balance = max(0, current_balance - amount)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE users 
+            SET balance = ?
+            WHERE user_id = ?
+        ''', (new_balance, target_id))
+        await db.commit()
+        
+        try:
+            await bot.send_message(
+                target_id,
+                f"⚠️ На вас наложен штраф!\n"
+                f"💰 Сумма: {amount} баллов\n"
+                f"📝 Причина: {reason}\n"
+                f"💳 Текущий баланс: {new_balance} баллов"
+            )
+        except Exception as e:
+            logger.error(f"Error sending fine notification: {e}")
+    
+    await message.answer(
+        f"✅ Штраф успешно наложен\n"
+        f"👤 Пользователь: {target_id}\n"
+        f"💰 Сумма: {amount} баллов\n"
+        f"📝 Причина: {reason}\n"
+        f"💳 Новый баланс: {new_balance} баллов",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "🗑 Удалить пользователя")
+async def delete_user_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "⚠️ ВНИМАНИЕ! Это действие нельзя отменить!\n"
+        "👤 Введите ID пользователя для удаления:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_delete_user)
+
+@dp.message(UserStates.waiting_for_delete_user)
+async def process_delete_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    if user_id == OWNER_ID:
+        await message.answer("❌ Невозможно удалить владельца бота!")
+        return
+        
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT username, first_name, last_name FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            user = await cursor.fetchone()
+            
+        if not user:
+            await message.answer("❌ Пользователь не найден.")
+            return
+            
+    await state.update_data(
+        target_user_id=user_id,
+        target_user_info=f"{user[0] or ''} ({user[1] or ''} {user[2] or ''})"
+    )
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Подтвердить")],
+            [KeyboardButton(text="↩️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer(
+        f"⚠️ Вы действительно хотите удалить пользователя?\n"
+        f"👤 ID: {user_id}\n"
+        f"📝 Данные: {user[0] or ''} ({user[1] or ''} {user[2] or ''})",
+        reply_markup=keyboard
+    )
+    await state.set_state(UserStates.waiting_for_delete_confirm)
+
+@dp.message(UserStates.waiting_for_delete_confirm)
+async def confirm_delete_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if message.text != "✅ Подтвердить":
+        await message.answer("❌ Неверная команда. Используйте клавиатуру.")
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Сохраняем данные в лог
+        await db.execute('''
+            INSERT INTO action_logs (
+                user_id, action_type, action_details
+            ) VALUES (?, 'user_deleted', ?)
+        ''', (
+            message.from_user.id,
+            json.dumps({
+                "target_id": target_id,
+                "target_info": user_data['target_user_info'],
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+        ))
+        
+        # Удаляем пользователя
+        await db.execute('DELETE FROM users WHERE user_id = ?', (target_id,))
+        await db.commit()
+        
+    try:
+        # Удаляем историю чата
+        await bot.delete_chat_history(target_id)
+        # Покидаем чат
+        await bot.leave_chat(target_id)
+    except Exception as e:
+        logger.error(f"Error cleaning user chat: {e}")
+    
+    await message.answer(
+        f"✅ Пользователь {target_id} успешно удален из бота.",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+    
+    
+# === ОБРАБОТЧИКИ БАНА И РАЗБАНА ===
+
+@dp.message(F.text == "🔒 Бан")
+async def ban_user_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для бана:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_ban_user)
+
+@dp.message(UserStates.waiting_for_ban_user)
+async def process_ban_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    if user_id == OWNER_ID:
+        await message.answer("❌ Невозможно забанить владельца бота!")
+        return
+        
+    if await is_banned(user_id):
+        await message.answer("❌ Пользователь уже забанен.")
+        return
+        
+    # Проверяем существование пользователя
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT username, first_name, last_name FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            user = await cursor.fetchone()
+            
+        if not user:
+            await message.answer("❌ Пользователь не найден в базе данных.")
+            return
+            
+    await state.update_data(
+        target_user_id=user_id,
+        user_info=f"{user[0] or ''} ({user[1] or ''} {user[2] or ''})"
+    )
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="1 час"),
+                KeyboardButton(text="24 часа"),
+                KeyboardButton(text="72 часа")
+            ],
+            [
+                KeyboardButton(text="7 дней"),
+                KeyboardButton(text="30 дней"),
+                KeyboardButton(text="Навсегда")
+            ],
+            [KeyboardButton(text="↩️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer(
+        "⏰ Выберите длительность бана или введите количество часов (1-100000):",
+        reply_markup=keyboard
+    )
+    await state.set_state(UserStates.waiting_for_ban_duration)
+
+@dp.message(UserStates.waiting_for_ban_duration)
+async def process_ban_duration(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    duration_map = {
+        "1 час": 1,
+        "24 часа": 24,
+        "72 часа": 72,
+        "7 дней": 168,  # 7 * 24
+        "30 дней": 720,  # 30 * 24
+        "Навсегда": 0
+    }
+    
+    if message.text in duration_map:
+        hours = duration_map[message.text]
+    else:
+        try:
+            hours = int(message.text)
+            if not (0 <= hours <= 100000):
+                raise ValueError
+        except ValueError:
+            await message.answer(
+                "❌ Неверная длительность. Введите число от 0 до 100000 или используйте клавиатуру."
+            )
+            return
+            
+    await state.update_data(ban_duration=hours)
+    await message.answer(
+        "📝 Введите причину бана:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_ban_reason)
+
+@dp.message(UserStates.waiting_for_ban_reason)
+async def process_ban_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    hours = user_data['ban_duration']
+    reason = message.text
+    
+    # Сохраняем текущие данные пользователя перед баном
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute('''
+            SELECT balance, is_vip, vip_expiration, referrals_count
+            FROM users WHERE user_id = ?
+        ''', (target_id,)) as cursor:
+            user_data = await cursor.fetchone()
+            
+        if hours == 0:  # Вечный бан
+            ban_expiration = None
+        else:
+            ban_expiration = datetime.now(timezone.utc) + timedelta(hours=hours)
+        
+        # Сохраняем данные пользователя в таблицу забаненных
+        await db.execute('''
+            INSERT INTO banned_users (
+                user_id, ban_reason, ban_date, ban_expiration, user_data
+            ) VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?)
+        ''', (
+            target_id,
+            reason,
+            ban_expiration,
+            json.dumps(user_data) if user_data else None
+        ))
+        
+        # Удаляем пользователя из основной таблицы
+        await db.execute('DELETE FROM users WHERE user_id = ?', (target_id,))
+        await db.commit()
+    
+    try:
+        # Очищаем историю чата
+        await bot.delete_chat_history(target_id)
+        
+        if hours == 0:
+            ban_message = (
+                f"🚫 Вы забанены навсегда!\n"
+                f"📝 Причина: {reason}"
+            )
+        else:
+            expiry_time = ban_expiration.strftime("%d.%m.%Y %H:%M:%S")
+            ban_message = (
+                f"🚫 Вы забанены на {hours} часов!\n"
+                f"⏰ Дата окончания: {expiry_time}\n"
+                f"📝 Причина: {reason}"
+            )
+        
+        # Отправляем сообщение о бане
+        ban_msg = await bot.send_message(target_id, ban_message)
+        
+        if hours > 0:
+            # Запускаем задачу обновления таймера
+            asyncio.create_task(update_ban_timer(target_id, ban_msg.message_id, ban_expiration))
+            
+    except Exception as e:
+        logger.error(f"Error sending ban notification: {e}")
+    
+    duration_text = "навсегда" if hours == 0 else f"на {hours} часов"
+    await message.answer(
+        f"✅ Пользователь {target_id} забанен {duration_text}\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+async def update_ban_timer(user_id: int, message_id: int, expiration: datetime):
+    """Обновляет таймер бана в сообщении"""
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            if now >= expiration:
+                # Время бана истекло
+                await unban_user(user_id, "Истек срок бана")
+                await bot.edit_message_text(
+                    "✅ Бан снят! Вы снова можете использовать бота.",
+                    user_id,
+                    message_id
+                )
+                break
+                
+            # Вычисляем оставшееся время
+            remaining = expiration - now
+            years = remaining.days // 365
+            months = (remaining.days % 365) // 30
+            days = (remaining.days % 30)
+            hours = remaining.seconds // 3600
+            minutes = (remaining.seconds % 3600) // 60
+            seconds = remaining.seconds % 60
+            
+            # Форматируем сообщение
+            time_parts = []
+            if years > 0:
+                time_parts.append(f"{years}г")
+            if months > 0:
+                time_parts.append(f"{months}м")
+            if days > 0:
+                time_parts.append(f"{days}д")
+            if hours > 0:
+                time_parts.append(f"{hours}ч")
+            if minutes > 0:
+                time_parts.append(f"{minutes}м")
+            time_parts.append(f"{seconds}с")
+            
+            time_str = " ".join(time_parts)
+            
+            await bot.edit_message_text(
+                f"🚫 До конца бана осталось: {time_str}",
+                user_id,
+                message_id
+            )
+            
+            # Определяем интервал обновления
+            if remaining.total_seconds() > 86400:  # > 1 день
+                await asyncio.sleep(3600)  # 1 час
+            elif remaining.total_seconds() > 3600:  # > 1 час
+                await asyncio.sleep(60)  # 1 минута
+            else:
+                await asyncio.sleep(1)  # 1 секунда
+                
+        except Exception as e:
+            logger.error(f"Error updating ban timer: {e}")
+            break
+
+async def unban_user(user_id: int, reason: str):
+    """Разбанивает пользователя"""
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Получаем данные пользователя из таблицы забаненных
+        async with db.execute('''
+            SELECT user_data FROM banned_users WHERE user_id = ?
+        ''', (user_id,)) as cursor:
+            result = await cursor.fetchone()
+            
+        if not result:
+            return
+            
+        user_data = json.loads(result[0]) if result[0] else {}
+        
+        # Восстанавливаем пользователя в основной таблице
+        await db.execute('''
+            INSERT INTO users (
+                user_id, balance, is_vip, vip_expiration, referrals_count
+            ) VALUES (?, ?, ?, ?, ?)
+        ''', (
+            user_id,
+            user_data.get('balance', 0),
+            user_data.get('is_vip', False),
+            user_data.get('vip_expiration'),
+            user_data.get('referrals_count', 0)
+        ))
+        
+        # Удаляем запись из таблицы забаненных
+        await db.execute('DELETE FROM banned_users WHERE user_id = ?', (user_id,))
+        await db.commit()
+        
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ Ваш бан снят!\n"
+                f"📝 Причина: {reason}\n"
+                f"Добро пожаловать обратно!"
+            )
+        except Exception as e:
+            logger.error(f"Error sending unban notification: {e}")
+
+@dp.message(F.text == "🔓 Разбан")
+async def unban_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для разбана:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_unban_user)
+
+@dp.message(UserStates.waiting_for_unban_user)
+async def process_unban_user(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    if not await is_banned(user_id):
+        await message.answer("❌ Пользователь не находится в бане.")
+        return
+        
+    await state.update_data(target_user_id=user_id)
+    await message.answer(
+        "📝 Введите причину разбана:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_unban_reason)
+
+@dp.message(UserStates.waiting_for_unban_reason)
+async def process_unban_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    reason = message.text
+    
+    await unban_user(target_id, reason)
+    
+    await message.answer(
+        f"✅ Пользователь {target_id} разбанен\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+    
+# === ОБРАБОТЧИКИ УПРАВЛЕНИЯ ИНФОРМАЦИЕЙ И СТАТИСТИКОЙ ===
+
+@dp.message(F.text == "👀 Кто донёс")
+async def who_reported_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID пользователя для просмотра информации:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_info_search)
+
+@dp.message(UserStates.waiting_for_info_search)
+async def process_info_search(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    target_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Получаем всю информацию о пользователе с данными о тех, кто её предоставил
+        async with db.execute('''
+            SELECT 
+                i.first_name,
+                i.last_name,
+                i.middle_name,
+                i.birth_date,
+                i.phone_number,
+                i.address,
+                i.workplace,
+                i.social_networks,
+                i.info_provider_id,
+                i.admin_approver_id,
+                i.info_date,
+                u.username as provider_username,
+                u.first_name as provider_first_name,
+                a.username as admin_username,
+                a.first_name as admin_first_name
+            FROM info_base i
+            LEFT JOIN users u ON i.info_provider_id = u.user_id
+            LEFT JOIN admins a ON i.admin_approver_id = a.admin_id
+            WHERE i.telegram_id = ?
+        ''') as cursor:
+            info = await cursor.fetchone()
+            
+        if not info:
+            await message.answer("❌ Информация не найдена.")
+            return
+            
+        # Формируем сообщение
+        fields = {
+            "👤 Имя": info[0],
+            "👥 Фамилия": info[1],
+            "👤 Отчество": info[2],
+            "📅 Дата рождения": info[3],
+            "📱 Номер": info[4],
+            "🏠 Место жительства": info[5],
+            "💼 Место работы": info[6],
+            "🌐 Сети": info[7]
+        }
+        
+        result_text = f"📋 Информация о пользователе {target_id}:\n\n"
+        
+        for field_name, value in fields.items():
+            if value:
+                provider = f"@{info[11]}" if info[11] else f"{info[12]}"
+                admin = f"@{info[13]}" if info[13] else f"{info[14]}"
+                date = datetime.fromisoformat(info[10]).strftime("%d.%m.%Y %H:%M")
+                result_text += (
+                    f"{field_name}: {value}\n"
+                    f"├ Донёс: {provider} ({info[8]})\n"
+                    f"├ Одобрил: {admin} ({info[9]})\n"
+                    f"└ Дата: {date}\n\n"
+                )
+        
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="❌ Удалить информацию")],
+                [KeyboardButton(text="↩️ В меню")]
+            ],
+            resize_keyboard=True
+        )
+        
+        await message.answer(result_text, reply_markup=keyboard)
+        await state.update_data(target_id=target_id, available_fields=fields)
+        await state.set_state(UserStates.waiting_for_delete_info_type)
+
+@dp.message(UserStates.waiting_for_delete_info_type)
+async def process_delete_info_type(message: Message, state: FSMContext):
+    if message.text == "↩️ В меню":
+        await message.answer("↩️ Возвращаемся в меню", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if message.text != "❌ Удалить информацию":
+        await message.answer("❌ Неверная команда. Используйте клавиатуру.")
+        return
+        
+    user_data = await state.get_data()
+    fields = user_data['available_fields']
+    
+    # Создаем клавиатуру из доступных полей
+    keyboard = []
+    for field_name, value in fields.items():
+        if value:
+            keyboard.append([KeyboardButton(text=field_name)])
+    keyboard.append([KeyboardButton(text="↩️ Отмена")])
+    
+    await message.answer(
+        "✏️ Выберите поле для удаления:",
+        reply_markup=ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+    )
+    await state.set_state(UserStates.waiting_for_delete_field)
+
+@dp.message(UserStates.waiting_for_delete_field)
+async def process_delete_field(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    target_id = user_data['target_id']
+    fields = user_data['available_fields']
+    
+    if message.text not in fields:
+        await message.answer("❌ Неверное поле. Используйте клавиатуру.")
+        return
+        
+    # Мапинг названий полей в базе данных
+    field_mapping = {
+        "👤 Имя": "first_name",
+        "👥 Фамилия": "last_name",
+        "👤 Отчество": "middle_name",
+        "📅 Дата рождения": "birth_date",
+        "📱 Номер": "phone_number",
+        "🏠 Место жительства": "address",
+        "💼 Место работы": "workplace",
+        "🌐 Сети": "social_networks"
+    }
+    
+    field = field_mapping[message.text]
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute(f'''
+            UPDATE info_base 
+            SET {field} = NULL,
+                info_provider_id = NULL,
+                admin_approver_id = NULL
+            WHERE telegram_id = ?
+        ''', (target_id,))
+        await db.commit()
+        
+    await message.answer(
+        f"✅ Поле {message.text} успешно очищено!",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "📊 Статистика бота")
+async def show_bot_statistics(message: Message):
+    if not await is_owner(message.from_user.id):
+        return
+        
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Общая статистика пользователей
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_users,
+                SUM(CASE WHEN is_vip = 1 THEN 1 ELSE 0 END) as vip_users,
+                SUM(balance) as total_balance,
+                SUM(referrals_count) as total_referrals
+            FROM users
+        ''') as cursor:
+            users_stats = await cursor.fetchone()
+        
+        # Статистика админов
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_admins,
+                SUM(approved_count) as total_approved,
+                SUM(rejected_count) as total_rejected
+            FROM admins
+        ''') as cursor:
+            admin_stats = await cursor.fetchone()
+            
+        # Статистика платежей
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_transactions,
+                SUM(CASE WHEN payment_type = 'balance' THEN amount ELSE 0 END) as balance_payments,
+                SUM(CASE WHEN payment_type = 'vip' THEN amount ELSE 0 END) as vip_payments
+            FROM payments
+            WHERE payment_status = 'completed'
+        ''') as cursor:
+            payment_stats = await cursor.fetchone()
+            
+        # Статистика информационной базы
+        async with db.execute('''
+            SELECT 
+                COUNT(DISTINCT telegram_id) as total_entries,
+                COUNT(first_name) + COUNT(last_name) + COUNT(middle_name) +
+                COUNT(birth_date) + COUNT(phone_number) + COUNT(address) +
+                COUNT(workplace) + COUNT(social_networks) as total_fields
+            FROM info_base
+        ''') as cursor:
+            info_stats = await cursor.fetchone()
+            
+        # Статистика банов
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_bans,
+                SUM(CASE WHEN ban_expiration IS NULL THEN 1 ELSE 0 END) as permanent_bans
+            FROM banned_users
+        ''') as cursor:
+            ban_stats = await cursor.fetchone()
+            
+        # Размер базы данных
+        db_size = os.path.getsize('bot_database.db') / (1024 * 1024)  # В МБ
+        
+        stats_text = (
+            "📊 СТАТИСТИКА БОТА\n\n"
+            f"👥 Пользователи:\n"
+            f"├ Всего: {users_stats[0]}\n"
+            f"├ VIP: {users_stats[1]}\n"
+            f"├ Общий баланс: {users_stats[2]:.2f} баллов\n"
+            f"└ Рефералов: {users_stats[3]}\n\n"
+            
+            f"👮 Администраторы:\n"
+            f"├ Всего: {admin_stats[0]}\n"
+            f"├ Одобрено: {admin_stats[1]}\n"
+            f"└ Отклонено: {admin_stats[2]}\n\n"
+            
+            f"💰 Платежи:\n"
+            f"├ Всего транзакций: {payment_stats[0]}\n"
+            f"├ За баллы: ${payment_stats[1]:.2f}\n"
+            f"└ За VIP: ${payment_stats[2]:.2f}\n\n"
+            
+            f"📁 Информационная база:\n"
+            f"├ Всего записей: {info_stats[0]}\n"
+            f"└ Всего полей: {info_stats[1]}\n\n"
+            
+            f"🚫 Баны:\n"
+            f"├ Всего: {ban_stats[0]}\n"
+            f"└ Вечных: {ban_stats[1]}\n\n"
+            
+            f"💾 Размер базы: {db_size:.2f} МБ\n"
+            f"📅 Дата запуска: {BOT_START_DATE}\n"
+            f"⏰ Аптайм: {(datetime.now() - datetime.fromisoformat(BOT_START_DATE)).days} дней"
+        )
+        
+        await message.answer(stats_text, reply_markup=get_admin_keyboard())
+
+# Добавляем необходимые состояния в класс UserStates
+class UserStates(StatesGroup):
+    # ... существующие состояния ...
+    waiting_for_info_search = State()
+    waiting_for_delete_info_type = State()
+    waiting_for_delete_field = State()
+    waiting_for_unban_user = State()
+    waiting_for_unban_reason = State()
+    
+# === ОБРАБОТЧИКИ УПРАВЛЕНИЯ АДМИНАМИ ===
+
+@dp.message(F.text == "➕ Добавить админа")
+async def add_admin_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID нового администратора:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_new_admin)
+
+@dp.message(UserStates.waiting_for_new_admin)
+async def process_new_admin(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    user_id = int(message.text)
+    
+    # Проверяем, не является ли пользователь уже админом
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT 1 FROM admins WHERE admin_id = ?',
+            (user_id,)
+        ) as cursor:
+            if await cursor.fetchone():
+                await message.answer("❌ Этот пользователь уже является администратором.")
+                await state.clear()
+                return
+                
+        # Проверяем существование пользователя в базе
+        async with db.execute(
+            'SELECT username, first_name, last_name FROM users WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            user = await cursor.fetchone()
+            
+        if not user:
+            await message.answer("❌ Пользователь не найден в базе данных.")
+            await state.clear()
+            return
+            
+    await state.update_data(
+        new_admin_id=user_id,
+        new_admin_info=f"@{user[0] or ''} ({user[1] or ''} {user[2] or ''})"
+    )
+    await message.answer("📝 Введите причину назначения:")
+    await state.set_state(UserStates.waiting_for_admin_reason)
+
+@dp.message(UserStates.waiting_for_admin_reason)
+async def process_admin_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    new_admin_id = user_data['new_admin_id']
+    admin_info = user_data['new_admin_info']
+    reason = message.text
+    
+    # Отправляем пользователю предложение стать админом
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_admin_{new_admin_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_admin_{new_admin_id}")
+            ]
+        ]
+    )
+    
+    admin_agreement = (
+        "📜 СОГЛАШЕНИЕ АДМИНИСТРАТОРА\n\n"
+        "Принимая эту должность, вы соглашаетесь:\n"
+        "1. Проверять все доносы в течение 24 часов\n"
+        "2. Предоставлять отчеты о проверках\n"
+        "3. Соблюдать конфиденциальность информации\n"
+        "4. Быть онлайн минимум 4 часа в день\n\n"
+        "За нарушение правил - снятие с должности.\n"
+        "3 предупреждения = автоматическое снятие.\n\n"
+        f"📝 Причина назначения: {reason}\n\n"
+        "Вы согласны стать администратором?"
+    )
+    
+    try:
+        await bot.send_message(new_admin_id, admin_agreement, reply_markup=keyboard)
+        await message.answer(
+            f"✅ Предложение отправлено пользователю {admin_info}",
+            reply_markup=get_admin_keyboard()
+        )
+    except Exception as e:
+        await message.answer(
+            "❌ Не удалось отправить предложение пользователю.\n"
+            "Возможно, бот заблокирован."
+        )
+        logger.error(f"Error sending admin offer: {e}")
+        
+    await state.clear()
+
+@dp.callback_query(lambda c: c.data.startswith(("accept_admin_", "reject_admin_")))
+async def process_admin_response(callback: CallbackQuery):
+    action, user_id = callback.data.split("_")[0:2]
+    user_id = int(user_id)
+    
+    if action == "reject":
+        await callback.message.edit_text(
+            "❌ Вы отклонили предложение стать администратором."
+        )
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"❌ Пользователь {callback.from_user.id} отклонил предложение стать администратором."
+            )
+        except Exception as e:
+            logger.error(f"Error notifying owner about admin rejection: {e}")
+        return
+        
+    # Принятие предложения
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            INSERT INTO admins (
+                admin_id,
+                username,
+                first_name,
+                last_name,
+                approved_count,
+                rejected_count,
+                warnings,
+                registration_date
+            ) VALUES (?, ?, ?, ?, 0, 0, 0, CURRENT_TIMESTAMP)
+        ''', (
+            callback.from_user.id,
+            callback.from_user.username,
+            callback.from_user.first_name,
+            callback.from_user.last_name
+        ))
+        await db.commit()
+        
+    await callback.message.edit_text(
+        "✅ Поздравляем! Вы стали администратором бота.\n"
+        "Используйте /admin для доступа к панели администратора."
+    )
+    
+    try:
+        await bot.send_message(
+            OWNER_ID,
+            f"✅ Пользователь {callback.from_user.username or callback.from_user.id} принял предложение стать администратором."
+        )
+    except Exception as e:
+        logger.error(f"Error notifying owner about admin acceptance: {e}")
+
+@dp.message(F.text == "➖ Снять админа")
+async def remove_admin_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID администратора для снятия:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_remove_admin)
+
+@dp.message(UserStates.waiting_for_remove_admin)
+async def process_remove_admin(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    admin_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute(
+            'SELECT username, first_name, last_name FROM admins WHERE admin_id = ?',
+            (admin_id,)
+        ) as cursor:
+            admin = await cursor.fetchone()
+            
+        if not admin:
+            await message.answer("❌ Администратор не найден.")
+            await state.clear()
+            return
+            
+    await state.update_data(
+        remove_admin_id=admin_id,
+        admin_info=f"@{admin[0] or ''} ({admin[1] or ''} {admin[2] or ''})"
+    )
+    await message.answer("📝 Введите причину снятия с должности:")
+    await state.set_state(UserStates.waiting_for_remove_admin_reason)
+
+@dp.message(UserStates.waiting_for_remove_admin_reason)
+async def process_remove_admin_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    admin_id = user_data['remove_admin_id']
+    admin_info = user_data['admin_info']
+    reason = message.text
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Сохраняем лог о снятии админа
+        await db.execute('''
+            INSERT INTO admin_logs (
+                admin_id,
+                action_type,
+                action_details,
+                action_date
+            ) VALUES (?, 'removal', ?, CURRENT_TIMESTAMP)
+        ''', (admin_id, reason))
+        
+        # Удаляем админа
+        await db.execute('DELETE FROM admins WHERE admin_id = ?', (admin_id,))
+        await db.commit()
+        
+    try:
+        # Уведомляем админа о снятии
+        await bot.send_message(
+            admin_id,
+            f"❌ Вы были сняты с должности администратора.\n"
+            f"📝 Причина: {reason}"
+        )
+        # Очищаем историю чата
+        await bot.delete_chat_history(admin_id)
+    except Exception as e:
+        logger.error(f"Error notifying removed admin: {e}")
+        
+    await message.answer(
+        f"✅ Администратор {admin_info} снят с должности\n"
+        f"📝 Причина: {reason}",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+
+@dp.message(F.text == "⚠️ Выдать варн")
+async def warn_admin_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer(
+        "👤 Введите ID администратора для выдачи предупреждения:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="↩️ Отмена")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(UserStates.waiting_for_warn_admin)
+
+@dp.message(UserStates.waiting_for_warn_admin)
+async def process_warn_admin(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    if not message.text.isdigit() or len(message.text) < 9:
+        await message.answer("❌ Неверный формат ID. ID должен содержать минимум 9 цифр.")
+        return
+        
+    admin_id = int(message.text)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute('''
+            SELECT username, first_name, last_name, warnings 
+            FROM admins 
+            WHERE admin_id = ?
+        ''', (admin_id,)) as cursor:
+            admin = await cursor.fetchone()
+            
+        if not admin:
+            await message.answer("❌ Администратор не найден.")
+            await state.clear()
+            return
+            
+    await state.update_data(
+        warn_admin_id=admin_id,
+        admin_info=f"@{admin[0] or ''} ({admin[1] or ''} {admin[2] or ''})",
+        current_warnings=admin[3]
+    )
+    await message.answer("📝 Введите причину предупреждения:")
+    await state.set_state(UserStates.waiting_for_warn_reason)
+
+@dp.message(UserStates.waiting_for_warn_reason)
+async def process_warn_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    admin_id = user_data['warn_admin_id']
+    admin_info = user_data['admin_info']
+    current_warnings = user_data['current_warnings']
+    reason = message.text
+    
+    new_warnings = current_warnings + 1
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE admins 
+            SET warnings = ?
+            WHERE admin_id = ?
+        ''', (new_warnings, admin_id))
+        
+        # Сохраняем лог предупреждения
+        await db.execute('''
+            INSERT INTO admin_logs (
+            
+@dp.message(UserStates.waiting_for_warn_reason)
+async def process_warn_reason(message: Message, state: FSMContext):
+    if message.text == "↩️ Отмена":
+        await message.answer("↩️ Действие отменено", reply_markup=get_admin_keyboard())
+        await state.clear()
+        return
+        
+    user_data = await state.get_data()
+    admin_id = user_data['warn_admin_id']
+    admin_info = user_data['admin_info']
+    current_warnings = user_data['current_warnings']
+    reason = message.text
+    
+    new_warnings = current_warnings + 1
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE admins 
+            SET warnings = ?
+            WHERE admin_id = ?
+        ''', (new_warnings, admin_id))
+        
+        # Сохраняем лог предупреждения
+        await db.execute('''
+            INSERT INTO admin_logs (
+                admin_id,
+                action_type,
+                action_details,
+                action_date
+            ) VALUES (?, 'warning', ?, CURRENT_TIMESTAMP)
+        ''', (admin_id, reason))
+        
+        await db.commit()
+        
+        # Если это третье предупреждение - автоматическое снятие
+        if new_warnings >= 3:
+            # Сохраняем лог о снятии
+            await db.execute('''
+                INSERT INTO admin_logs (
+                    admin_id,
+                    action_type,
+                    action_details,
+                    action_date
+                ) VALUES (?, 'auto_removal', 'Автоматическое снятие после 3 предупреждений', CURRENT_TIMESTAMP)
+            ''', (admin_id,))
+            
+            # Удаляем админа
+            await db.execute('DELETE FROM admins WHERE admin_id = ?', (admin_id,))
+            await db.commit()
+            
+            try:
+                # Уведомляем админа о снятии
+                await bot.send_message(
+                    admin_id,
+                    "❌ Вы автоматически сняты с должности администратора после получения 3 предупреждений.\n"
+                    f"📝 Последнее предупреждение: {reason}"
+                )
+                # Очищаем историю чата
+                await bot.delete_chat_history(admin_id)
+            except Exception as e:
+                logger.error(f"Error notifying removed admin: {e}")
+                
+            await message.answer(
+                f"⚠️ Администратор {admin_info} получил третье предупреждение и был автоматически снят с должности.\n"
+                f"📝 Причина последнего предупреждения: {reason}",
+                reply_markup=get_admin_keyboard()
+            )
+        else:
+            try:
+                # Уведомляем админа о предупреждении
+                await bot.send_message(
+                    admin_id,
+                    f"⚠️ Вы получили предупреждение ({new_warnings}/3)\n"
+                    f"📝 Причина: {reason}"
+                )
+            except Exception as e:
+                logger.error(f"Error notifying warned admin: {e}")
+                
+            await message.answer(
+                f"⚠️ Администратор {admin_info} получил предупреждение ({new_warnings}/3)\n"
+                f"📝 Причина: {reason}",
+                reply_markup=get_admin_keyboard()
+            )
+    
+    await state.clear()
+
+@dp.message(F.text == "📈 Недельная статистика")
+async def show_weekly_stats(message: Message):
+    if not await is_owner(message.from_user.id):
+        return
+        
+    # Получаем дату начала недели (7 дней назад)
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        # Статистика проверок по админам за неделю
+        async with db.execute('''
+            SELECT 
+                a.username,
+                a.first_name,
+                COUNT(CASE WHEN l.action_type = 'approve' THEN 1 END) as approves,
+                COUNT(CASE WHEN l.action_type = 'reject' THEN 1 END) as rejects,
+                COUNT(CASE WHEN l.action_type = 'warning' THEN 1 END) as warnings
+            FROM admins a
+            LEFT JOIN admin_logs l ON a.admin_id = l.admin_id
+            WHERE l.action_date >= ?
+            GROUP BY a.admin_id
+            ORDER BY (approves + rejects) DESC
+        ''', (week_ago.isoformat(),)) as cursor:
+            admin_stats = await cursor.fetchall()
+            
+        # Статистика платежей за неделю
+        async with db.execute('''
+            SELECT 
+                SUM(CASE WHEN payment_type = 'balance' THEN amount ELSE 0 END) as balance_payments,
+                SUM(CASE WHEN payment_type = 'vip' THEN amount ELSE 0 END) as vip_payments,
+                COUNT(*) as total_transactions
+            FROM payments
+            WHERE payment_date >= ? AND payment_status = 'completed'
+        ''', (week_ago.isoformat(),)) as cursor:
+            payment_stats = await cursor.fetchone()
+            
+        # Статистика новых пользователей
+        async with db.execute('''
+            SELECT COUNT(*) 
+            FROM users 
+            WHERE registration_date >= ?
+        ''', (week_ago.isoformat(),)) as cursor:
+            new_users = await cursor.fetchone()
+            
+        # Статистика доносов
+        async with db.execute('''
+            SELECT 
+                COUNT(*) as total_reports,
+                COUNT(DISTINCT telegram_id) as unique_targets
+            FROM info_base
+            WHERE info_date >= ?
+        ''', (week_ago.isoformat(),)) as cursor:
+            report_stats = await cursor.fetchone()
+        
+        stats_text = (
+            "📈 НЕДЕЛЬНАЯ СТАТИСТИКА\n"
+            f"📅 Период: {week_ago.strftime('%d.%m.%Y')} - {datetime.now().strftime('%d.%m.%Y')}\n\n"
+            
+            "👮 Статистика админов:\n"
+        )
+        
+        if admin_stats:
+            for admin in admin_stats:
+                username, first_name, approves, rejects, warnings = admin
+                total_checks = approves + rejects
+                if total_checks > 0:
+                    efficiency = (approves / total_checks) * 100
+                else:
+                    efficiency = 0
+                    
+                stats_text += (
+                    f"├ {first_name} (@{username or 'None'})\n"
+                    f"│ ✅ Одобрено: {approves}\n"
+                    f"│ ❌ Отклонено: {rejects}\n"
+                    f"│ ⚠️ Получено предупреждений: {warnings}\n"
+                    f"│ 📊 Эффективность: {efficiency:.1f}%\n"
+                    "│\n"
+                )
+        else:
+            stats_text += "├ Нет активности администраторов\n"
+            
+        stats_text += (
+            "\n💰 Финансы:\n"
+            f"├ Транзакций: {payment_stats[2] or 0}\n"
+            f"├ Доход с баллов: ${payment_stats[0] or 0:.2f}\n"
+            f"└ Доход с VIP: ${payment_stats[1] or 0:.2f}\n\n"
+            
+            "👥 Пользователи:\n"
+            f"└ Новых за неделю: {new_users[0]}\n\n"
+            
+            "📋 Доносы:\n"
+            f"├ Всего доносов: {report_stats[0]}\n"
+            f"└ Уникальных целей: {report_stats[1]}"
+        )
+        
+        await message.answer(stats_text, reply_markup=get_admin_keyboard())
+
+# Добавляем новые состояния в класс UserStates
+class UserStates(StatesGroup):
+    # ... существующие состояния ...
+    waiting_for_warn_admin = State()
+    waiting_for_warn_reason = State()
+    waiting_for_new_admin = State()
+    waiting_for_admin_reason = State()
+    waiting_for_remove_admin = State()
+    waiting_for_remove_admin_reason = State()
