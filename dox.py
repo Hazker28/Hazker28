@@ -109,6 +109,13 @@ class UserStates(StatesGroup):
     waiting_for_admin_id = State()
     waiting_for_admin_reason = State()
     waiting_for_rejection_reason = State()
+    waiting_for_balance_user = State()
+    waiting_for_balance_amount = State()
+    waiting_for_balance_reason = State()
+    waiting_for_ban_user = State()
+    waiting_for_ban_duration = State()
+    waiting_for_ban_reason = State()
+  
     
 async def init_db():
     """Initialize database tables"""
@@ -935,8 +942,8 @@ async def process_vip_purchase(callback: CallbackQuery):
         logger.error(f"Error creating invoice: {e}")
         await callback.answer("❌ Ошибка создания счета. Попробуйте позже.", show_alert=True)
 
-# Payment processing
 async def check_payments():
+    """Check payment statuses"""
     while True:
         try:
             async with aiosqlite.connect('bot_database.db') as db:
@@ -951,64 +958,70 @@ async def check_payments():
                     user_id, invoice_id, payment_type, amount, vip_duration = payment
                     
                     try:
-                        invoice = await crypto.get_invoices(invoice_ids=invoice_id)
+                        invoices = await crypto.get_invoices(invoice_ids=invoice_id)
                         
-                        if invoice and invoice.status == 'paid':
-                            if payment_type == 'balance':
-                                await db.execute('''
-                                    UPDATE users 
-                                    SET balance = balance + ?
-                                    WHERE user_id = ?
-                                ''', (amount, user_id))
-                                
-                                await bot.send_message(
-                                    user_id,
-                                    f"✅ Ваш баланс пополнен на {amount} баллов!"
-                                )
-                                
-                            elif payment_type == 'vip':
-                                if vip_duration == 0:
-                                    expiration = None
-                                else:
-                                    expiration = datetime.now(timezone.utc) + timedelta(days=vip_duration)
-                                
-                                await db.execute('''
-                                    UPDATE users 
-                                    SET is_vip = TRUE,
-                                        vip_expiration = ?
-                                    WHERE user_id = ?
-                                ''', (expiration, user_id))
-                                
-                                duration_text = "навсегда" if vip_duration == 0 else f"на {vip_duration} дней"
-                                await bot.send_message(
-                                    user_id,
-                                    f"✅ VIP статус активирован {duration_text}!"
-                                )
+                        # Проверяем, что invoices не пустой и берем первый элемент
+                        if invoices and len(invoices) > 0:
+                            invoice = invoices[0]  # Берем первый элемент списка
                             
-                            await db.execute('''
-                                UPDATE payments 
-                                SET payment_status = 'completed'
-                                WHERE invoice_id = ?
-                            ''', (invoice_id,))
-                            
-                            await log_action(
-                                user_id,
-                                f"payment_{payment_type}",
-                                {"amount": amount, "invoice_id": invoice_id}
-                            )
+                            if hasattr(invoice, 'status') and invoice.status == 'paid':
+                                if payment_type == 'balance':
+                                    await db.execute('''
+                                        UPDATE users 
+                                        SET balance = balance + ?
+                                        WHERE user_id = ?
+                                    ''', (amount, user_id))
+                                    
+                                    await bot.send_message(
+                                        user_id,
+                                        f"✅ Ваш баланс пополнен на {amount} баллов!"
+                                    )
+                                    
+                                elif payment_type == 'vip':
+                                    if vip_duration == 0:
+                                        expiration = None
+                                    else:
+                                        expiration = datetime.now(timezone.utc) + timedelta(days=vip_duration)
+                                    
+                                    await db.execute('''
+                                        UPDATE users 
+                                        SET is_vip = TRUE,
+                                            vip_expiration = ?
+                                        WHERE user_id = ?
+                                    ''', (expiration, user_id))
+                                    
+                                    duration_text = "навсегда" if vip_duration == 0 else f"на {vip_duration} дней"
+                                    await bot.send_message(
+                                        user_id,
+                                        f"✅ VIP статус активирован {duration_text}!"
+                                    )
+                                
+                                await db.execute('''
+                                    UPDATE payments 
+                                    SET payment_status = 'completed'
+                                    WHERE invoice_id = ?
+                                ''', (invoice_id,))
+                                
+                                await log_action(
+                                    user_id,
+                                    f"payment_{payment_type}",
+                                    {"amount": amount, "invoice_id": invoice_id}
+                                )
                             
                     except Exception as e:
                         logger.error(f"Error checking payment {invoice_id}: {e}")
+                        continue
                 
                 await db.commit()
                 
         except Exception as e:
             logger.error(f"Error in payment checker: {e}")
             
-        await asyncio.sleep(60)  # Check every minute
-# Admin panel and report system
+        await asyncio.sleep(60)
+        
 @dp.message(Command("owenu"))
 async def admin_menu(message: Message):
+    # Проверяем только на владельца, так как это команда только для него
     if not await is_owner(message.from_user.id):
         return
     
@@ -1401,11 +1414,13 @@ async def process_report_decision(callback: CallbackQuery, state: FSMContext):
         
         await db.commit()
 
-@dp.message(lambda message: message.from_user.id in ADMIN_IDS and message.text == "📊 Статистика бота")
+
+        
+@dp.message(F.text == "📊 Статистика бота")
 async def show_bot_statistics(message: Message):
     if not await is_owner(message.from_user.id):
         return
-        
+    # Существующий код...
     async with aiosqlite.connect('bot_database.db') as db:
         # Get general statistics
         async with db.execute('''
@@ -1461,6 +1476,70 @@ async def show_bot_statistics(message: Message):
         )
         
         await message.answer(stats_text)
+
+@dp.message(F.text == "💰 Выдать баллы")
+async def give_balance(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer("👤 Введите ID пользователя:")
+    await state.set_state(UserStates.waiting_for_balance_user)
+
+@dp.message(UserStates.waiting_for_balance_user)
+async def process_balance_user(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Неверный формат ID. Попробуйте снова:")
+        return
+    
+    user_id = int(message.text)
+    await state.update_data(target_user_id=user_id)
+    await message.answer("💰 Введите количество баллов:")
+    await state.set_state(UserStates.waiting_for_balance_amount)
+
+@dp.message(UserStates.waiting_for_balance_amount)
+async def process_balance_amount(message: Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Неверный формат количества. Введите положительное число:")
+        return
+    
+    await state.update_data(amount=amount)
+    await message.answer("📝 Введите причину начисления:")
+    await state.set_state(UserStates.waiting_for_balance_reason)
+
+@dp.message(UserStates.waiting_for_balance_reason)
+async def process_balance_reason(message: Message, state: FSMContext):
+    user_data = await state.get_data()
+    target_id = user_data['target_user_id']
+    amount = user_data['amount']
+    reason = message.text
+    
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE users 
+            SET balance = balance + ?
+            WHERE user_id = ?
+        ''', (amount, target_id))
+        await db.commit()
+    
+    try:
+        await bot.send_message(
+            target_id,
+            f"💰 На ваш баланс начислено {amount} баллов\n"
+            f"📝 Причина: {reason}"
+        )
+    except Exception as e:
+        logger.error(f"Error sending balance notification: {e}")
+    
+    await message.answer(
+        f"✅ Баллы успешно начислены\n"
+        f"👤 Пользователь: {target_id}\n"
+        f"💰 Количество: {amount}\n"
+        f"📝 Причина: {reason}"
+    )
+    await state.clear()
 
 @dp.message(lambda message: message.from_user.id in ADMIN_IDS and message.text == "👥 Статистика админов")
 async def show_admin_statistics(message: Message):
@@ -1523,7 +1602,29 @@ async def remove_admin(admin_id: int, reason: str):
             "admin_removed",
             {"admin_id": admin_id, "reason": reason}
         )
+        
+@dp.message(F.text == "🔒 Бан")
+async def ban_user_start(message: Message, state: FSMContext):
+    if not await is_owner(message.from_user.id):
+        return
+    await message.answer("👤 Введите ID пользователя:")
+    await state.set_state(UserStates.waiting_for_ban_user)
 
+@dp.message(UserStates.waiting_for_ban_user)
+async def process_ban_user(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Неверный формат ID. Попробуйте снова:")
+        return
+    
+    user_id = int(message.text)
+    await state.update_data(ban_user_id=user_id)
+    await message.answer(
+        "⏰ Введите время бана в часах\n"
+        "0 = вечный бан\n"
+        "От 1 до 100000 часов"
+    )
+    await state.set_state(UserStates.waiting_for_ban_duration)
+    
 @dp.message(F.text == "➕ Добавить админа")
 async def add_admin_start(message: Message, state: FSMContext):
     if not await is_owner(message.from_user.id):
@@ -1651,96 +1752,53 @@ async def process_info_search(message: Message, state: FSMContext):
             ''', (int(search_query),)) as cursor:
                 user = await cursor.fetchone()
                 users = [user] if user else []
-        else:
-            # Search by name
-            async with db.execute('''
-                SELECT * FROM users 
-                WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?
-            ''', (f"%{search_query}%", f"%{search_query}%", f"%{search_query}%")) as cursor:
-                users = await cursor.fetchall()
-        
-        if not users:
-            await message.answer("❌ Пользователь не найден.")
-            await state.clear()
-            return
-        
-        if len(users) > 1:
-            # Multiple matches
-            text = "📋 Найдено несколько совпадений:\n\n"
-            for user in users:
-                text += f"👤 {user[2]} {user[3]} - ID: {user[0]}\n"
-            text += "\nВведите ID нужного пользователя:"
-            
-            await message.answer(text)
-            await state.set_state("waiting_for_user_selection")
-            await state.update_data(users=users)
-            return
-        
-        # Single user found - show detailed info
-        await show_user_details(message, users[0][0])
-        await state.clear()
 
-async def show_user_details(message: Message, user_id: int):
+async def check_admin_warnings(admin_id: int) -> bool:
     async with aiosqlite.connect('bot_database.db') as db:
-        # Get user info
-        async with db.execute('''
-            SELECT * FROM users WHERE user_id = ?
-        ''', (user_id,)) as cursor:
-            user = await cursor.fetchone()
+        async with db.execute(
+            'SELECT warnings FROM admins WHERE admin_id = ?',
+            (admin_id,)
+        ) as cursor:
+            result = await cursor.fetchone()
+            if result and result[0] >= 3:
+                await remove_admin(admin_id, "Превышено количество предупреждений")
+                return False
+    return True
+
+async def add_admin_warning(admin_id: int, reason: str):
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute('''
+            UPDATE admins 
+            SET warnings = warnings + 1
+            WHERE admin_id = ?
+        ''', (admin_id,))
         
-        if not user:
-            await message.answer("❌ Пользователь не найден.")
-            return
+        await db.execute('''
+            INSERT INTO admin_warnings (admin_id, warning_reason)
+            VALUES (?, ?)
+        ''', (admin_id, reason))
         
-        # Get referrals info
-        async with db.execute('''
-            SELECT COUNT(*) FROM referrals WHERE user_id = ?
-        ''', (user_id,)) as cursor:
-            referrals_count = (await cursor.fetchone())[0]
+        # Check if admin should be removed
+        async with db.execute(
+            'SELECT warnings FROM admins WHERE admin_id = ?',
+            (admin_id,)
+        ) as cursor:
+            result = await cursor.fetchone()
+            if result and result[0] >= 3:
+                await remove_admin(admin_id, "Превышено количество предупреждений")
         
-        # Get payments info
-        async with db.execute('''
-            SELECT 
-                COUNT(*),
-                SUM(CASE WHEN payment_status = 'completed' THEN amount ELSE 0 END)
-            FROM payments 
-            WHERE user_id = ?
-        ''', (user_id,)) as cursor:
-            payments_count, total_payments = await cursor.fetchone()
+        await db.commit()
         
-        # Get reports info
-        async with db.execute('''
-            SELECT COUNT(*) FROM reports WHERE user_id = ?
-        ''', (user_id,)) as cursor:
-            reports_count = (await cursor.fetchone())[0]
-        
-        reg_date = datetime.fromisoformat(user[11]).strftime("%d.%m.%Y %H:%M")
-        vip_status = "Активен" if user[6] else "Неактивен"
-        if user[6] and user[7]:
-            vip_expiry = datetime.fromisoformat(user[7])
-            if vip_expiry > datetime.now(timezone.utc):
-                vip_status += f" (до {vip_expiry.strftime('%d.%m.%Y')})"
-        
-        text = (
-            f"👤 Информация о пользователе\n\n"
-            f"🆔 ID: {user[0]}\n"
-            f"👤 Имя: {user[2]}\n"
-            f"👥 Фамилия: {user[3]}\n"
-            f"📝 Username: @{user[1]}\n"
-            f"📅 Регистрация: {reg_date}\n\n"
-            f"💰 Баланс: {user[5]} баллов\n"
-            f"👑 VIP статус: {vip_status}\n"
-            f"🔑 Реферальный код: {user[4]}\n"
-            f"👥 Рефералов привлечено: {referrals_count}\n\n"
-            f"📊 Статистика:\n"
-            f"💵 Всего платежей: {payments_count}\n"
-            f"💰 Сумма платежей: ${total_payments:.2f}\n"
-            f"📝 Отправлено доносов: {reports_count}\n"
-            f"⚠️ Предупреждений: {user[14]}\n"
-        )
-        
-        await message.answer(text)
-# Automatic systems and bot startup
+        try:
+            await bot.send_message(
+                admin_id,
+                f"⚠️ Вам выдано предупреждение!\n"
+                f"📝 Причина: {reason}\n"
+                f"📊 Всего предупреждений: {result[0] if result else 0}/3"
+            )
+        except Exception as e:
+            logger.error(f"Error sending warning notification: {e}")
+
 async def check_admin_deadlines():
     """Check admin report deadlines and VIP expiration"""
     while True:
@@ -1998,6 +2056,7 @@ async def on_startup():
     asyncio.create_task(update_statistics())
     
     logger.info("Bot started successfully!")
+
 
 async def main():
     """Main function to start the bot"""
